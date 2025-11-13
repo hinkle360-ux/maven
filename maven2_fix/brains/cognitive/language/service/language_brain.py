@@ -2382,6 +2382,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     "relationship_kind": "friend_with_system",
                     "relationship_value": True,
                     "storable": True,
+                    "storable_type": "RELATIONAL",
                     "type": "STATEMENT",
                     "is_question": False,
                     "is_command": False,
@@ -2395,6 +2396,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     "relationship_kind": "friend_with_system",
                     "relationship_value": False,
                     "storable": True,
+                    "storable_type": "RELATIONAL",
                     "type": "STATEMENT",
                     "is_question": False,
                     "is_command": False,
@@ -2407,12 +2409,13 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     "intent": "relationship_query",
                     "relationship_kind": "friend_with_system",
                     "storable": False,
+                    "storable_type": "RELATIONAL",
                     "type": "QUESTION",
                     "is_question": True,
                     "is_command": False,
                     "is_request": False,
                     "is_statement": False,
-                    "skip_memory_search": True,
+                    "skip_memory_search": False,
                 })
         except Exception:
             # If relationship detection fails, continue with normal classification
@@ -2596,11 +2599,54 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         ctx = payload if isinstance(payload, dict) else {}
         text = _clean(str(ctx.get("original_query", "")))
 
-        # Fixed response for "are we friends" question
+        # Relationship query response with memory lookup
         try:
             text_lower = text.lower().strip().rstrip("?!.,")
-            if text_lower in ("are we friends", "are you my friend", "can we be friends"):
-                response_text = "I'm an AI, so I don't experience friendship the way humans do, but I'm here to help you."
+            if text_lower in ("are we friends", "are you my friend"):
+                # Check if this is a relationship query intent from stage_3
+                stage3 = ctx.get("stage_3_language", {})
+                intent = stage3.get("intent")
+
+                # Import memory_librarian to access relationship facts
+                response_text = None
+                if intent == "relationship_query":
+                    try:
+                        # Import get_relationship_fact from memory_librarian
+                        import sys
+                        from pathlib import Path as _PathRel
+                        _ml_path = _PathRel(__file__).resolve().parents[2] / "memory_librarian" / "service"
+                        if str(_ml_path) not in sys.path:
+                            sys.path.insert(0, str(_ml_path))
+                        from memory_librarian import get_relationship_fact
+
+                        # Get user_id from context
+                        user_id = ctx.get("user_id") or "default_user"
+                        relationship_kind = stage3.get("relationship_kind", "friend_with_system")
+
+                        # Check memory for stored relationship fact
+                        fact = get_relationship_fact(user_id, relationship_kind)
+
+                        if fact is not None:
+                            val = bool(fact.get("value"))
+                            if val:
+                                response_text = (
+                                    "You've told me we're friends. "
+                                    "I'm an AI and don't experience friendship like humans do, "
+                                    "but I understand that as your intent and I'm here to help you."
+                                )
+                            else:
+                                response_text = (
+                                    "You've told me we're not friends. "
+                                    "I'll respect that, but I'm still here to help you if you want."
+                                )
+                    except Exception:
+                        # If memory lookup fails, use default response
+                        pass
+
+                # Default response if no memory found
+                if not response_text:
+                    response_text = "I'm an AI, so I don't experience friendship the way humans do, but I'm here to help you."
+
                 return {
                     "ok": True,
                     "op": op,
@@ -2609,11 +2655,11 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                         "candidates": [{
                             "type": "relational_response",
                             "text": response_text,
-                            "confidence": 0.9,
+                            "confidence": 1.0,
                             "tone": "warm",
-                            "source": "friendship_template"
+                            "tag": "relationship_from_memory" if "told me" in response_text else "friendship_template"
                         }],
-                        "weights_used": {"gen_rule": "friendship_template_v1"}
+                        "weights_used": {"gen_rule": "relationship_memory_v1"}
                     }
                 }
         except Exception:
