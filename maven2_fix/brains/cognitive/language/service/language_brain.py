@@ -1482,6 +1482,36 @@ def _parse_intent(text: str) -> Dict[str, Any]:
     except Exception:
         # If detection fails, fall through to other heuristics
         pass
+
+    # ------------------------------------------------------------------
+    # Yes/no questions with auxiliary verbs (e.g. "do birds fly",
+    # "can cats jump", "is water wet")
+    #
+    # Many factual questions use auxiliary verb forms (do/does/can/is/
+    # are/etc.) and omit the question mark.  Without explicit detection,
+    # these are misclassified as statements.  Match common auxiliary
+    # patterns at the start of the utterance and classify them as
+    # questions.  This enables proper handling of simple fact queries
+    # like "do birds fly" or "can cats jump".
+    try:
+        yes_no_pattern = re.match(
+            r"^(do|does|did|can|could|will|would|should|is|are|was|were)\s+\w+",
+            lower
+        )
+        if yes_no_pattern:
+            return {
+                "type": "QUESTION",
+                "storable": False,
+                "confidence_penalty": 0.0,
+                "is_question": True,
+                "is_command": False,
+                "is_request": False,
+                "is_statement": False
+            }
+    except Exception:
+        # On error, fall through to other detection logic
+        pass
+
     # Questions (explicit question mark or question words)
     if stripped.endswith("?") or first_word in question_words:
         return {
@@ -2546,6 +2576,17 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Also expose the custom storable_type for downstream components.  Use
         # the uppercase version to align with other fields like is_question.
         parsed["type"] = intent_info.get("type", parsed.get("storable_type"))
+        # Copy relationship metadata if present.  The _apply_relationship_overrides
+        # helper sets relationship_kind and relationship_value in intent_info when
+        # the user expresses or queries relationship facts (e.g. "we are friends",
+        # "are we friends?").  These fields must be propagated to the parsed
+        # payload so that Stage 6 and Stage 9 can retrieve and store relationship
+        # facts correctly.  Without this, relationship_query and relationship_update
+        # intents are detected but the kind/value data is lost.
+        if "relationship_kind" in intent_info:
+            parsed["relationship_kind"] = intent_info["relationship_kind"]
+        if "relationship_value" in intent_info:
+            parsed["relationship_value"] = intent_info["relationship_value"]
         # Apply personal/emotional classification overrides.  This logic inspects
         # the original text for first‑person and emotional language.  When
         # detected, it may override the storable_type, storable flag and
