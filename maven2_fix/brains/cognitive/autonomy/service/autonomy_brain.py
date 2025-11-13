@@ -387,6 +387,36 @@ def _complete_goals(max_goals: int = 1, priority_strategy: str = "priority") -> 
             continue
     return executed
 
+def tick(ctx: dict) -> dict:
+    """
+    Minimal autonomous tick.
+
+    Must NEVER raise exceptions.
+    Returns a structured dict describing what autonomy decided to do.
+    For now, this is a safe stub that can be expanded later.
+
+    Args:
+        ctx: Pipeline context dictionary.
+
+    Returns:
+        A dictionary with action, reason, and confidence fields.
+    """
+    try:
+        # Example: inspect recent context and decide to do nothing
+        # This can be expanded later to perform real autonomous decision-making
+        return {
+            "action": "noop",
+            "reason": "autonomy_stub",
+            "confidence": 0.0,
+        }
+    except Exception:
+        # Even in the unlikely event of an error, return a safe default
+        return {
+            "action": "noop",
+            "reason": "tick_exception_caught",
+            "confidence": 0.0,
+        }
+
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     from api.utils import error_response  # type: ignore
     from api.utils import success_response  # type: ignore

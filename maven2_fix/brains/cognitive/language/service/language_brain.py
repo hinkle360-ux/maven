@@ -2341,6 +2341,83 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             # If math detection fails, continue with normal classification
             pass
 
+        # -----------------------------------------------------------------
+        # Relationship update/query detection
+        #
+        # Detect when users express relationship facts like "we are friends"
+        # or "we're not friends" and when they query relationship status like
+        # "are we friends?". These should be handled specially to store/retrieve
+        # relationship facts from memory.
+        try:
+            _nl_rel = text.lower().strip()
+            # Remove trailing punctuation for pattern matching
+            _nl_rel_clean = _nl_rel.rstrip("?!.,")
+
+            # Positive relationship update patterns
+            positive_patterns = [
+                "we are friends",
+                "we're friends",
+                "you are my friend",
+                "you're my friend",
+            ]
+
+            # Negative relationship update patterns
+            negative_patterns = [
+                "we are not friends",
+                "we're not friends",
+                "you are not my friend",
+                "you're not my friend",
+            ]
+
+            # Relationship query patterns
+            query_patterns = [
+                "are we friends",
+                "are you my friend",
+            ]
+
+            # Check for positive relationship update
+            if any(p in _nl_rel_clean for p in positive_patterns):
+                intent_info.update({
+                    "intent": "relationship_update",
+                    "relationship_kind": "friend_with_system",
+                    "relationship_value": True,
+                    "storable": True,
+                    "type": "STATEMENT",
+                    "is_question": False,
+                    "is_command": False,
+                    "is_request": False,
+                    "is_statement": True,
+                })
+            # Check for negative relationship update
+            elif any(p in _nl_rel_clean for p in negative_patterns):
+                intent_info.update({
+                    "intent": "relationship_update",
+                    "relationship_kind": "friend_with_system",
+                    "relationship_value": False,
+                    "storable": True,
+                    "type": "STATEMENT",
+                    "is_question": False,
+                    "is_command": False,
+                    "is_request": False,
+                    "is_statement": True,
+                })
+            # Check for relationship query
+            elif any(p in _nl_rel_clean for p in query_patterns):
+                intent_info.update({
+                    "intent": "relationship_query",
+                    "relationship_kind": "friend_with_system",
+                    "storable": False,
+                    "type": "QUESTION",
+                    "is_question": True,
+                    "is_command": False,
+                    "is_request": False,
+                    "is_statement": False,
+                    "skip_memory_search": True,
+                })
+        except Exception:
+            # If relationship detection fails, continue with normal classification
+            pass
+
         # Build the parsed payload.  Maintain backwards compatibility with
         # existing fields like ``is_question`` and ``intent`` while adding
         # richer intent metadata used by reasoning and storage stages.

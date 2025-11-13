@@ -846,6 +846,68 @@ def _merge_brain_kv(brain: str, key: str, value, conf_delta: float = 0.1) -> Dic
     return {"value": value, "confidence": new_conf, "access_count": new_acc}
 
 # ---------------------------------------------------------------------------
+# Relationship fact storage
+#
+# These helpers enable Maven to store and retrieve relationship facts such as
+# "we are friends" or "we are not friends". Relationship facts are stored
+# using the same JSONL mechanism as other facts, but with a dedicated "relationships"
+# brain to keep them separate and easily queryable.
+
+def set_relationship_fact(user_id: str, key: str, value: bool) -> None:
+    """
+    Store a simple relationship fact, e.g. ('friend_with_system', True).
+    Should write to the same underlying store used for other user-specific facts.
+
+    Args:
+        user_id: The user identifier
+        key: The relationship key (e.g., "friend_with_system")
+        value: Boolean value indicating the relationship status
+    """
+    try:
+        record = {
+            "kind": "relationship",
+            "key": key,
+            "value": value,
+            "user_id": user_id,
+            "status": "confirmed",
+            "source": "user_statement",
+        }
+        # Store in the relationships brain
+        _append_jsonl(_brain_path("relationships"), record)
+    except Exception:
+        # Silently ignore errors to prevent pipeline disruption
+        pass
+
+def get_relationship_fact(user_id: str, key: str) -> dict | None:
+    """
+    Retrieve a relationship fact, or None if not present.
+    Should use the existing memory/query mechanisms, not a new subsystem.
+
+    Args:
+        user_id: The user identifier
+        key: The relationship key (e.g., "friend_with_system")
+
+    Returns:
+        The latest record for (user_id, key) or None if not found.
+    """
+    try:
+        path = _brain_path("relationships")
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        # Scan in reverse to get the most recent entry
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if rec.get("user_id") == user_id and rec.get("key") == key:
+                return rec
+    except Exception:
+        pass
+    return None
+
+# ---------------------------------------------------------------------------
 # Fast‑path caching for repeated queries
 #
 # When the same question is asked multiple times within a short time window,
@@ -4883,9 +4945,67 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         duplicate = bool(match)
 
         # Stage 6 — candidates
-        # Check for math_compute intent and handle deterministically
+        # Check for relationship_query intent and handle from memory
         stage3_intent = str((ctx.get("stage_3_language") or {}).get("intent", ""))
-        if stage3_intent == "math_compute":
+        if stage3_intent == "relationship_query":
+            # Handle relationship query by looking up stored relationship facts
+            try:
+                user_id = ctx.get("user_id") or "default_user"
+                relationship_kind = (ctx.get("stage_3_language") or {}).get("relationship_kind")
+
+                if relationship_kind:
+                    fact = get_relationship_fact(user_id, relationship_kind)
+
+                    if fact is not None and fact.get("value") is True:
+                        answer_text = "You've told me we're friends. I'm an AI and don't experience friendship like humans do, but I understand that as your intent and I'm here to help you."
+                        verdict = "TRUE"
+                        confidence = 0.9
+                    elif fact is not None and fact.get("value") is False:
+                        answer_text = "You've told me we're not friends. I'll respect that, but I'm still here to help you if you want."
+                        verdict = "TRUE"
+                        confidence = 0.9
+                    else:
+                        # No stored relationship fact; fall back to default answer
+                        answer_text = "I'm an AI, so I don't experience friendship the way humans do, but I'm here to help you."
+                        verdict = "NEUTRAL"
+                        confidence = 0.7
+
+                    # Build a direct relationship candidate
+                    cand = {
+                        "type": "relationship_query",
+                        "text": answer_text,
+                        "confidence": confidence,
+                        "tone": "neutral",
+                        "tag": "relationship_retrieved",
+                    }
+                    ctx["stage_6_candidates"] = {
+                        "candidates": [cand],
+                        "weights_used": {"gen_rule": "relationship_query_v1"}
+                    }
+                    # Set stage 8 validation
+                    ctx["stage_8_validation"] = {
+                        "verdict": verdict,
+                        "mode": "RELATIONSHIP_QUERY",
+                        "confidence": confidence,
+                        "routing_order": {"target_bank": None, "action": None},
+                        "supported_by": [],
+                        "contradicted_by": [],
+                        "answer": answer_text,
+                        "weights_used": {"rule": "relationship_query_v1"}
+                    }
+                else:
+                    # Missing relationship_kind; fall back to language brain
+                    cands = _brain_module("language").service_api({"op": "GENERATE_CANDIDATES", "mid": mid, "payload": ctx})
+                    ctx["stage_6_candidates"] = cands.get("payload", {})
+            except Exception as rel_ex:
+                # Relationship query failed; fall back to language brain
+                try:
+                    cands = _brain_module("language").service_api({"op": "GENERATE_CANDIDATES", "mid": mid, "payload": ctx})
+                    ctx["stage_6_candidates"] = cands.get("payload", {})
+                except Exception:
+                    ctx["stage_6_candidates"] = {"candidates": [], "error": str(rel_ex)}
+        # Check for math_compute intent and handle deterministically
+        elif stage3_intent == "math_compute":
             # Call the deterministic math handler
             math_result = _solve_simple_math(text)
             if math_result.get("ok"):
@@ -5227,6 +5347,35 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Determine storage eligibility based on storable_type and reasoning verdict.
         st_type = str(stage3.get("storable_type", "")).upper()
         verdict_upper = str((ctx.get("stage_8_validation") or {}).get("verdict", "")).upper()
+
+        # Handle relationship updates early
+        stage3_intent = str(stage3.get("intent", ""))
+        if stage3_intent == "relationship_update":
+            try:
+                # Extract relationship information from stage3
+                user_id = ctx.get("user_id") or "default_user"
+                relationship_kind = stage3.get("relationship_kind")
+                relationship_value = stage3.get("relationship_value")
+
+                if relationship_kind is not None and relationship_value is not None:
+                    # Store the relationship fact
+                    set_relationship_fact(user_id, relationship_kind, relationship_value)
+
+                    # Record in stage_9_storage
+                    ctx["stage_9_storage"] = {
+                        "action": "STORE",
+                        "bank": "relationships",
+                        "kind": relationship_kind,
+                        "value": relationship_value,
+                    }
+                else:
+                    ctx["stage_9_storage"] = {"skipped": True, "reason": "relationship_update_missing_data"}
+            except Exception as rel_store_ex:
+                ctx["stage_9_storage"] = {"skipped": True, "reason": f"relationship_update_error: {str(rel_store_ex)[:100]}"}
+            # Skip remaining storage logic for relationship updates
+            pass
+        else:
+            pass  # Continue with normal storage logic
         # Allow downstream storage only when the claim is validated, not a low‑confidence
         # cache result and when the content is considered storable.  This early
         # check supersedes the normal routing logic to prevent polluting the
@@ -5871,13 +6020,26 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                         "error": "pre_replan_failed",
                         "detail": str(pre_repl_ex),
                     }
-                # Self‑DMN tick
+                # Autonomy tick
                 try:
-                    sdmn_mod = _brain_module("self_dmn")
-                    tick_resp = sdmn_mod.service_api({"op": "TICK"})
-                    ctx["stage_15_autonomy_tick"] = tick_resp.get("payload", {})
-                except Exception:
-                    ctx["stage_15_autonomy_tick"] = {"error": "tick_failed"}
+                    aut_brain_mod = _brain_module("autonomy")
+                    # Use the safe tick function that never throws
+                    tick_result = aut_brain_mod.tick(ctx)
+                    if not isinstance(tick_result, dict):
+                        tick_result = {
+                            "action": "noop",
+                            "reason": "invalid_tick_result",
+                            "confidence": 0.0,
+                        }
+                    ctx["stage_15_autonomy_tick"] = tick_result
+                except Exception as e:
+                    ctx["stage_15_autonomy_tick"] = {
+                        "action": "noop",
+                        "reason": "tick_failed",
+                        "exception_type": type(e).__name__,
+                        "message": str(e)[:200],
+                        "confidence": 0.0,
+                    }
                 # Score opportunities and formulate goals using the motivation brain
                 try:
                     mot_mod = _brain_module("motivation")
