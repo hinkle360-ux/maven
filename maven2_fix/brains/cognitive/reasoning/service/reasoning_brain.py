@@ -1406,6 +1406,16 @@ def bid_for_attention(ctx: Dict[str, Any]) -> Dict[str, Any]:
         stage8 = ctx.get("stage_8_validation") or {}
         verdict = str(stage8.get("verdict", "")).upper()
         mode = str(stage8.get("mode", "")).upper()
+
+        # Skip reasoning for PREFERENCE and relationship queries - these don't need validation
+        if verdict == "PREFERENCE" or mode in {"PREFERENCE_QUERY", "RELATIONSHIP_QUERY"}:
+            return {
+                "brain_name": "reasoning",
+                "priority": 0.05,
+                "reason": "preference_or_relationship_skip",
+                "evidence": {},
+            }
+
         # High priority if contradictions have been detected.  We treat
         # ``CONTRADICTED_EVIDENCE`` mode as a proxy for contradictions or
         # a THEORY verdict to indicate disputed evidence.

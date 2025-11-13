@@ -907,6 +907,53 @@ def get_relationship_fact(user_id: str, key: str) -> dict | None:
         pass
     return None
 
+def get_all_preferences(user_id: str) -> list:
+    """
+    Retrieve all stored preferences for a user.
+
+    This searches through memory banks for records tagged with "preference"
+    and returns them as a list of preference facts.
+
+    Args:
+        user_id: The user identifier
+
+    Returns:
+        List of preference records (dicts with keys like 'content', 'confidence', etc.)
+    """
+    preferences = []
+    try:
+        # Search through multiple banks where preferences might be stored
+        bank_names = ["factual", "working_theories", "preferences"]
+
+        for bank_name in bank_names:
+            try:
+                bank_path = _brain_path(bank_name)
+                if not bank_path.exists():
+                    continue
+
+                with open(bank_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        # Check if this is a preference record for our user
+                        if (rec.get("user_id") == user_id or not rec.get("user_id")) and \
+                           ("preference" in str(rec.get("tags", [])).lower() or \
+                            "preference" in str(rec.get("kind", "")).lower()):
+                            preferences.append(rec)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+    except Exception:
+        pass
+
+    return preferences
+
 # ---------------------------------------------------------------------------
 # Fast‑path caching for repeated queries
 #
@@ -4945,9 +4992,66 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         duplicate = bool(match)
 
         # Stage 6 — candidates
-        # Check for relationship_query intent and handle from memory
+        # Check for preference_query intent and handle from memory
         stage3_intent = str((ctx.get("stage_3_language") or {}).get("intent", ""))
-        if stage3_intent == "relationship_query":
+        if stage3_intent == "preference_query":
+            # Handle preference query by retrieving all stored preferences
+            try:
+                user_id = ctx.get("user_id") or "default_user"
+                preferences = get_all_preferences(user_id)
+
+                if preferences:
+                    # Build a summary of preferences
+                    pref_items = []
+                    for pref in preferences:
+                        content = str(pref.get("content", ""))
+                        if content:
+                            pref_items.append(content)
+
+                    # Create a single-sentence summary
+                    if len(pref_items) <= 3:
+                        summary = ", ".join(pref_items)
+                    else:
+                        summary = ", ".join(pref_items[:3]) + f", and {len(pref_items) - 3} more"
+
+                    answer_text = f"Based on what you've told me, you like: {summary}."
+                    confidence = 0.9
+                else:
+                    answer_text = "I don't have any stored preferences for you yet. Tell me what you like!"
+                    confidence = 0.7
+
+                # Build a direct preference candidate
+                cand = {
+                    "type": "preference_query",
+                    "text": answer_text,
+                    "confidence": confidence,
+                    "tone": "neutral",
+                    "tag": "preference_retrieved",
+                }
+                ctx["stage_6_candidates"] = {
+                    "candidates": [cand],
+                    "weights_used": {"gen_rule": "preference_query_v1"}
+                }
+                # Set stage 8 validation with PREFERENCE verdict
+                ctx["stage_8_validation"] = {
+                    "verdict": "PREFERENCE",
+                    "mode": "PREFERENCE_QUERY",
+                    "confidence": 1.0,
+                    "routing_order": {"target_bank": None, "action": None},
+                    "supported_by": [],
+                    "contradicted_by": [],
+                    "answer": answer_text,
+                    "weights_used": {"rule": "preference_query_v1"}
+                }
+            except Exception as pref_ex:
+                # Preference query failed; fall back to language brain
+                try:
+                    cands = _brain_module("language").service_api({"op": "GENERATE_CANDIDATES", "mid": mid, "payload": ctx})
+                    ctx["stage_6_candidates"] = cands.get("payload", {})
+                except Exception:
+                    ctx["stage_6_candidates"] = {"candidates": [], "error": str(pref_ex)}
+        # Check for relationship_query intent and handle from memory
+        elif stage3_intent == "relationship_query":
             # Handle relationship query by looking up stored relationship facts
             try:
                 user_id = ctx.get("user_id") or "default_user"
@@ -5399,7 +5503,12 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Check for math_compute intent - skip storage for raw math expressions
         stage3_intent = str(stage3.get("intent", ""))
         is_math_compute = (stage3_intent == "math_compute" or ctx.get("mode") == "math_deterministic")
-        if is_math_compute:
+        is_preference_or_relationship_query = stage3_intent in {"preference_query", "relationship_query"}
+
+        # Skip storage for preference/relationship queries and math expressions
+        if is_preference_or_relationship_query:
+            ctx["stage_9_storage"] = {"skipped": True, "reason": "query_not_stored"}
+        elif is_math_compute:
             ctx["stage_9_storage"] = {"skipped": True, "reason": "math_expression_not_stored"}
         elif st_type in non_storable_types:
             reason_map = {
@@ -5411,6 +5520,9 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Reasoning may direct a SKIP_STORAGE verdict for unanswered questions or invalid input
         elif verdict_upper == "SKIP_STORAGE":
             ctx["stage_9_storage"] = {"skipped": True, "reason": "question_without_answer"}
+        # Skip storage for PREFERENCE verdicts - preferences are already stored elsewhere
+        elif verdict_upper == "PREFERENCE":
+            ctx["stage_9_storage"] = {"skipped": True, "reason": "preference_already_handled"}
         elif allowed:
             routing = ctx.get("stage_8_validation", {}).get("routing_order", {}) or {}
             target_bank = routing.get("target_bank") or "theories_and_contradictions"

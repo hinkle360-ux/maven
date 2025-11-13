@@ -2418,6 +2418,35 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             # If relationship detection fails, continue with normal classification
             pass
 
+        # Detect preference queries: "what do I like?", "what are my preferences?", etc.
+        try:
+            _nl_pref = text.lower().strip().rstrip("?!.,")
+            preference_query_patterns = [
+                "what do i like",
+                "what are my preferences",
+                "what are my favorite",
+                "what are my favourite",
+                "what do i prefer",
+                "list my preferences",
+                "tell me my preferences",
+                "what things do i like",
+            ]
+
+            if any(p in _nl_pref for p in preference_query_patterns):
+                intent_info.update({
+                    "intent": "preference_query",
+                    "storable": False,
+                    "type": "QUESTION",
+                    "is_question": True,
+                    "is_command": False,
+                    "is_request": False,
+                    "is_statement": False,
+                    "skip_memory_search": True,
+                })
+        except Exception:
+            # If preference detection fails, continue with normal classification
+            pass
+
         # Build the parsed payload.  Maintain backwards compatibility with
         # existing fields like ``is_question`` and ``intent`` while adding
         # richer intent metadata used by reasoning and storage stages.
@@ -2456,7 +2485,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             # questions to ensure downstream stages treat them as such.
             "intent": (
                 intent_info.get("intent")
-                if intent_info.get("intent") == "math_compute"
+                if intent_info.get("intent") in {"math_compute", "relationship_update", "relationship_query", "preference_query"}
                 else (
                     "greeting"
                     if is_social
