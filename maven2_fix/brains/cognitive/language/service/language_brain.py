@@ -959,6 +959,91 @@ GREETINGS = {
     "greetings", "howdy", "hola", "bonjour"
 }
 
+def _apply_relationship_overrides(intent_info: Dict[str, Any], text: str) -> None:
+    """Apply relationship update/query detection overrides to intent_info.
+
+    Detect when users express relationship facts like "we are friends"
+    or "we're not friends" and when they query relationship status like
+    "are we friends?". These should be handled specially to store/retrieve
+    relationship facts from memory.
+
+    Args:
+        intent_info: The intent dictionary to update in-place
+        text: The user input text to analyze
+    """
+    try:
+        _nl_rel = text.lower().strip()
+        # Remove trailing punctuation for pattern matching
+        _nl_rel_clean = _nl_rel.rstrip("?!.,")
+
+        # Positive relationship update patterns
+        positive_patterns = [
+            "we are friends",
+            "we're friends",
+            "you are my friend",
+            "you're my friend",
+        ]
+
+        # Negative relationship update patterns
+        negative_patterns = [
+            "we are not friends",
+            "we're not friends",
+            "you are not my friend",
+            "you're not my friend",
+        ]
+
+        # Relationship query patterns
+        query_patterns = [
+            "are we friends",
+            "are you my friend",
+        ]
+
+        # Check for positive relationship update
+        if any(p in _nl_rel_clean for p in positive_patterns):
+            intent_info.update({
+                "intent": "relationship_update",
+                "relationship_kind": "friend_with_system",
+                "relationship_value": True,
+                "storable": True,
+                "storable_type": "RELATIONAL",
+                "type": "STATEMENT",
+                "is_question": False,
+                "is_command": False,
+                "is_request": False,
+                "is_statement": True,
+            })
+        # Check for negative relationship update
+        elif any(p in _nl_rel_clean for p in negative_patterns):
+            intent_info.update({
+                "intent": "relationship_update",
+                "relationship_kind": "friend_with_system",
+                "relationship_value": False,
+                "storable": True,
+                "storable_type": "RELATIONAL",
+                "type": "STATEMENT",
+                "is_question": False,
+                "is_command": False,
+                "is_request": False,
+                "is_statement": True,
+            })
+        # Check for relationship query
+        elif any(p in _nl_rel_clean for p in query_patterns):
+            intent_info.update({
+                "intent": "relationship_query",
+                "relationship_kind": "friend_with_system",
+                "storable": False,
+                "storable_type": "RELATIONAL",
+                "type": "QUESTION",
+                "is_question": True,
+                "is_command": False,
+                "is_request": False,
+                "is_statement": False,
+                "skip_memory_search": False,
+            })
+    except Exception:
+        # If relationship detection fails, continue with normal classification
+        pass
+
 def _parse_intent(text: str) -> Dict[str, Any]:
     """Infer the communicative intent of the input text.
 
@@ -2348,78 +2433,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # or "we're not friends" and when they query relationship status like
         # "are we friends?". These should be handled specially to store/retrieve
         # relationship facts from memory.
-        try:
-            _nl_rel = text.lower().strip()
-            # Remove trailing punctuation for pattern matching
-            _nl_rel_clean = _nl_rel.rstrip("?!.,")
-
-            # Positive relationship update patterns
-            positive_patterns = [
-                "we are friends",
-                "we're friends",
-                "you are my friend",
-                "you're my friend",
-            ]
-
-            # Negative relationship update patterns
-            negative_patterns = [
-                "we are not friends",
-                "we're not friends",
-                "you are not my friend",
-                "you're not my friend",
-            ]
-
-            # Relationship query patterns
-            query_patterns = [
-                "are we friends",
-                "are you my friend",
-            ]
-
-            # Check for positive relationship update
-            if any(p in _nl_rel_clean for p in positive_patterns):
-                intent_info.update({
-                    "intent": "relationship_update",
-                    "relationship_kind": "friend_with_system",
-                    "relationship_value": True,
-                    "storable": True,
-                    "storable_type": "RELATIONAL",
-                    "type": "STATEMENT",
-                    "is_question": False,
-                    "is_command": False,
-                    "is_request": False,
-                    "is_statement": True,
-                })
-            # Check for negative relationship update
-            elif any(p in _nl_rel_clean for p in negative_patterns):
-                intent_info.update({
-                    "intent": "relationship_update",
-                    "relationship_kind": "friend_with_system",
-                    "relationship_value": False,
-                    "storable": True,
-                    "storable_type": "RELATIONAL",
-                    "type": "STATEMENT",
-                    "is_question": False,
-                    "is_command": False,
-                    "is_request": False,
-                    "is_statement": True,
-                })
-            # Check for relationship query
-            elif any(p in _nl_rel_clean for p in query_patterns):
-                intent_info.update({
-                    "intent": "relationship_query",
-                    "relationship_kind": "friend_with_system",
-                    "storable": False,
-                    "storable_type": "RELATIONAL",
-                    "type": "QUESTION",
-                    "is_question": True,
-                    "is_command": False,
-                    "is_request": False,
-                    "is_statement": False,
-                    "skip_memory_search": False,
-                })
-        except Exception:
-            # If relationship detection fails, continue with normal classification
-            pass
+        _apply_relationship_overrides(intent_info, text)
 
         # Detect preference queries: "what do I like?", "what are my preferences?", etc.
         try:
@@ -2601,51 +2615,49 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
 
         # Relationship query response with memory lookup
         try:
-            text_lower = text.lower().strip().rstrip("?!.,")
-            if text_lower in ("are we friends", "are you my friend"):
-                # Check if this is a relationship query intent from stage_3
-                stage3 = ctx.get("stage_3_language", {})
-                intent = stage3.get("intent")
+            # Check if this is a relationship query intent from stage_3
+            stage3 = ctx.get("stage_3_language", {})
+            intent = stage3.get("intent")
 
-                # Import memory_librarian to access relationship facts
+            # Import memory_librarian to access relationship facts
+            if intent == "relationship_query":
                 response_text = None
-                if intent == "relationship_query":
-                    try:
-                        # Import get_relationship_fact from memory_librarian using importlib
-                        import importlib.util
-                        from pathlib import Path as _PathRel
-                        _ml_file = _PathRel(__file__).resolve().parents[2] / "memory_librarian" / "service" / "memory_librarian.py"
-                        _spec = importlib.util.spec_from_file_location("memory_librarian_module", _ml_file)
-                        if _spec and _spec.loader:
-                            _ml_module = importlib.util.module_from_spec(_spec)
-                            _spec.loader.exec_module(_ml_module)
-                            get_relationship_fact = _ml_module.get_relationship_fact
+                try:
+                    # Import get_relationship_fact from memory_librarian using importlib
+                    import importlib.util
+                    from pathlib import Path as _PathRel
+                    _ml_file = _PathRel(__file__).resolve().parents[2] / "memory_librarian" / "service" / "memory_librarian.py"
+                    _spec = importlib.util.spec_from_file_location("memory_librarian_module", _ml_file)
+                    if _spec and _spec.loader:
+                        _ml_module = importlib.util.module_from_spec(_spec)
+                        _spec.loader.exec_module(_ml_module)
+                        get_relationship_fact = _ml_module.get_relationship_fact
+                    else:
+                        raise ImportError("Could not load memory_librarian module")
+
+                    # Get user_id from context
+                    user_id = ctx.get("user_id") or "default_user"
+                    relationship_kind = stage3.get("relationship_kind", "friend_with_system")
+
+                    # Check memory for stored relationship fact
+                    fact = get_relationship_fact(user_id, relationship_kind)
+
+                    if fact is not None:
+                        val = bool(fact.get("value"))
+                        if val:
+                            response_text = (
+                                "You've told me we're friends. "
+                                "I'm an AI and don't experience friendship like humans do, "
+                                "but I understand that as your intent and I'm here to help you."
+                            )
                         else:
-                            raise ImportError("Could not load memory_librarian module")
-
-                        # Get user_id from context
-                        user_id = ctx.get("user_id") or "default_user"
-                        relationship_kind = stage3.get("relationship_kind", "friend_with_system")
-
-                        # Check memory for stored relationship fact
-                        fact = get_relationship_fact(user_id, relationship_kind)
-
-                        if fact is not None:
-                            val = bool(fact.get("value"))
-                            if val:
-                                response_text = (
-                                    "You've told me we're friends. "
-                                    "I'm an AI and don't experience friendship like humans do, "
-                                    "but I understand that as your intent and I'm here to help you."
-                                )
-                            else:
-                                response_text = (
-                                    "You've told me we're not friends. "
-                                    "I'll respect that, but I'm still here to help you if you want."
-                                )
-                    except Exception:
-                        # If memory lookup fails, use default response
-                        pass
+                            response_text = (
+                                "You've told me we're not friends. "
+                                "I'll respect that, but I'm still here to help you if you want."
+                            )
+                except Exception:
+                    # If memory lookup fails, use default response
+                    pass
 
                 # Default response if no memory found
                 if not response_text:
