@@ -954,6 +954,45 @@ def get_all_preferences(user_id: str) -> list:
 
     return preferences
 
+def list_preferences(user_id: str, domain: str | None = None) -> list:
+    """
+    List stored preferences for a user, optionally filtered by domain.
+
+    This is a helper for preference summarization queries. It retrieves
+    all preference records and filters them by domain category if specified.
+
+    Args:
+        user_id: The user identifier
+        domain: Optional domain/category to filter by (e.g., "animals", "food", "music")
+
+    Returns:
+        List of preference records matching the criteria
+    """
+    # Get all preferences first
+    all_prefs = get_all_preferences(user_id)
+
+    # If no domain filter, return all
+    if domain is None:
+        return all_prefs
+
+    # Filter by domain
+    filtered = []
+    try:
+        domain_lower = domain.lower()
+        for pref in all_prefs:
+            # Check if domain appears in content, tags, or kind
+            content = str(pref.get("content", "")).lower()
+            tags = str(pref.get("tags", [])).lower()
+            kind = str(pref.get("kind", "")).lower()
+
+            if domain_lower in content or domain_lower in tags or domain_lower in kind:
+                filtered.append(pref)
+    except Exception:
+        # If filtering fails, return all preferences
+        return all_prefs
+
+    return filtered
+
 # ---------------------------------------------------------------------------
 # Fast‑path caching for repeated queries
 #
@@ -4995,10 +5034,15 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Check for preference_query intent and handle from memory
         stage3_intent = str((ctx.get("stage_3_language") or {}).get("intent", ""))
         if stage3_intent == "preference_query":
-            # Handle preference query by retrieving all stored preferences
+            # Handle preference query by retrieving stored preferences
+            # Support domain-specific queries (e.g., "what animals do I like?")
             try:
                 user_id = ctx.get("user_id") or "default_user"
-                preferences = get_all_preferences(user_id)
+                stage3_lang = ctx.get("stage_3_language") or {}
+                preference_domain = stage3_lang.get("preference_domain")
+
+                # Use the new list_preferences helper with optional domain filter
+                preferences = list_preferences(user_id, preference_domain)
 
                 if preferences:
                     # Build a summary of preferences
@@ -5014,10 +5058,18 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     else:
                         summary = ", ".join(pref_items[:3]) + f", and {len(pref_items) - 3} more"
 
-                    answer_text = f"Based on what you've told me, you like: {summary}."
+                    # Customize answer based on domain
+                    if preference_domain:
+                        answer_text = f"Based on what you've told me, you like these {preference_domain}: {summary}."
+                    else:
+                        answer_text = f"Based on what you've told me, you like: {summary}."
                     confidence = 0.9
                 else:
-                    answer_text = "I don't have any stored preferences for you yet. Tell me what you like!"
+                    # No preferences found - customize message for domain
+                    if preference_domain:
+                        answer_text = f"You haven't told me about any {preference_domain} you like yet."
+                    else:
+                        answer_text = "You haven't told me anything you like yet. Tell me what you like!"
                     confidence = 0.7
 
                 # Build a direct preference candidate
@@ -5108,6 +5160,83 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     ctx["stage_6_candidates"] = cands.get("payload", {})
                 except Exception:
                     ctx["stage_6_candidates"] = {"candidates": [], "error": str(rel_ex)}
+        # Check for user_profile_summary intent and build profile from memory
+        elif stage3_intent == "user_profile_summary":
+            # Handle user profile summary by collecting identity, preferences, and relationships
+            try:
+                user_id = ctx.get("user_id") or "default_user"
+
+                # Collect profile components
+                profile_parts = []
+
+                # 1. Identity/name
+                name = _resolve_user_name(ctx)
+                if name:
+                    profile_parts.append(f"You're {name}")
+
+                # 2. Preferences (top 5)
+                preferences = list_preferences(user_id, None)
+                if preferences:
+                    pref_items = []
+                    for pref in preferences[:5]:  # Limit to top 5
+                        content = str(pref.get("content", ""))
+                        if content:
+                            pref_items.append(content)
+                    if pref_items:
+                        if len(pref_items) == 1:
+                            profile_parts.append(f"you like {pref_items[0]}")
+                        elif len(pref_items) == 2:
+                            profile_parts.append(f"you like {pref_items[0]} and {pref_items[1]}")
+                        else:
+                            profile_parts.append(f"you like {', '.join(pref_items[:-1])}, and {pref_items[-1]}")
+
+                # 3. Relationship status
+                friend_fact = get_relationship_fact(user_id, "friend_with_system")
+                if friend_fact and friend_fact.get("value") is True:
+                    profile_parts.append("you've told me we're friends")
+
+                # Build the final answer
+                if profile_parts:
+                    # Capitalize first letter and join with proper punctuation
+                    profile_text = ". ".join(profile_parts)
+                    if not profile_text[0].isupper():
+                        profile_text = profile_text[0].upper() + profile_text[1:]
+                    answer_text = f"Here's what I know so far: {profile_text}. I'm still learning and will update this as we talk."
+                    confidence = 0.85
+                else:
+                    answer_text = "You haven't told me much about yourself yet. Share what you'd like me to know!"
+                    confidence = 0.7
+
+                # Build a direct profile candidate
+                cand = {
+                    "type": "user_profile_summary",
+                    "text": answer_text,
+                    "confidence": confidence,
+                    "tone": "neutral",
+                    "tag": "profile_retrieved",
+                }
+                ctx["stage_6_candidates"] = {
+                    "candidates": [cand],
+                    "weights_used": {"gen_rule": "user_profile_summary_v1"}
+                }
+                # Set stage 8 validation with SKIP_STORAGE verdict
+                ctx["stage_8_validation"] = {
+                    "verdict": "SKIP_STORAGE",
+                    "mode": "PROFILE_SUMMARY",
+                    "confidence": confidence,
+                    "routing_order": {"target_bank": None, "action": None},
+                    "supported_by": [],
+                    "contradicted_by": [],
+                    "answer": answer_text,
+                    "weights_used": {"rule": "user_profile_summary_v1"}
+                }
+            except Exception as profile_ex:
+                # Profile query failed; fall back to language brain
+                try:
+                    cands = _brain_module("language").service_api({"op": "GENERATE_CANDIDATES", "mid": mid, "payload": ctx})
+                    ctx["stage_6_candidates"] = cands.get("payload", {})
+                except Exception:
+                    ctx["stage_6_candidates"] = {"candidates": [], "error": str(profile_ex)}
         # Check for math_compute intent and handle deterministically
         elif stage3_intent == "math_compute":
             # Call the deterministic math handler
@@ -5146,6 +5275,33 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception as cand_ex:
                     ctx["stage_6_candidates"] = {"candidates": [], "error": str(cand_ex)}
         else:
+            # For all other cases, call language brain to generate candidates
+            try:
+                cands = _brain_module("language").service_api({"op": "GENERATE_CANDIDATES", "mid": mid, "payload": ctx})
+                ctx["stage_6_candidates"] = cands.get("payload", {})
+
+                # Check if any candidate is an identity response
+                # Identity queries like "who are you", "describe yourself" should not be
+                # logged as UNANSWERED_QUESTION. Set SKIP_STORAGE verdict.
+                candidates_list = ctx["stage_6_candidates"].get("candidates", [])
+                if candidates_list:
+                    for cand in candidates_list:
+                        if cand.get("type") == "identity":
+                            # Set stage 8 validation for identity with SKIP_STORAGE verdict
+                            ctx["stage_8_validation"] = {
+                                "verdict": "SKIP_STORAGE",
+                                "mode": "IDENTITY_RESPONSE",
+                                "confidence": cand.get("confidence", 0.85),
+                                "routing_order": {"target_bank": None, "action": None},
+                                "supported_by": [],
+                                "contradicted_by": [],
+                                "answer": cand.get("text", ""),
+                                "weights_used": {"rule": "identity_response_v1"}
+                            }
+                            break
+            except Exception as cand_ex:
+                ctx["stage_6_candidates"] = {"candidates": [], "error": str(cand_ex)}
+
             # Always run a cross‑validation to compute arithmetic or definitional responses.
             try:
                 _cross_validate_answer(ctx)
@@ -5503,10 +5659,10 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Check for math_compute intent - skip storage for raw math expressions
         stage3_intent = str(stage3.get("intent", ""))
         is_math_compute = (stage3_intent == "math_compute" or ctx.get("mode") == "math_deterministic")
-        is_preference_or_relationship_query = stage3_intent in {"preference_query", "relationship_query"}
+        is_meta_query = stage3_intent in {"preference_query", "relationship_query", "user_profile_summary"}
 
-        # Skip storage for preference/relationship queries and math expressions
-        if is_preference_or_relationship_query:
+        # Skip storage for meta queries (preferences, relationships, profile) and math expressions
+        if is_meta_query:
             ctx["stage_9_storage"] = {"skipped": True, "reason": "query_not_stored"}
         elif is_math_compute:
             ctx["stage_9_storage"] = {"skipped": True, "reason": "math_expression_not_stored"}

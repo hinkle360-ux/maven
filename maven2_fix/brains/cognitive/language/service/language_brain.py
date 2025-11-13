@@ -1336,7 +1336,10 @@ def _parse_intent(text: str) -> Dict[str, Any]:
             "what's your name",
             "tell me about yourself",
             "who you are",
-            "are you maven"
+            "are you maven",
+            "tell me who you are",
+            "describe yourself",
+            "what are you really"
         ]
         for pat in identity_patterns:
             if pat in lower:
@@ -2475,6 +2478,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         _apply_relationship_overrides(intent_info, text)
 
         # Detect preference queries: "what do I like?", "what are my preferences?", etc.
+        # Also detect domain-specific queries like "what animals do I like?"
         try:
             _nl_pref = text.lower().strip().rstrip("?!.,")
             preference_query_patterns = [
@@ -2488,9 +2492,32 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 "what things do i like",
             ]
 
-            if any(p in _nl_pref for p in preference_query_patterns):
+            # Domain-specific patterns with extraction
+            # Format: (pattern, domain_name)
+            domain_patterns = [
+                (r"what\s+(?:kind\s+of\s+)?animals?\s+(?:do\s+)?i\s+like", "animals"),
+                (r"what\s+(?:kind\s+of\s+)?food\s+(?:do\s+)?i\s+like", "food"),
+                (r"what\s+(?:kind\s+of\s+)?music\s+(?:do\s+)?i\s+like", "music"),
+                (r"what\s+(?:kind\s+of\s+)?games?\s+(?:do\s+)?i\s+like", "games"),
+                (r"what\s+(?:kind\s+of\s+)?colors?\s+(?:do\s+)?i\s+like", "colors"),
+                (r"what\s+(?:kind\s+of\s+)?sports?\s+(?:do\s+)?i\s+like", "sports"),
+                (r"what\s+(?:kind\s+of\s+)?books?\s+(?:do\s+)?i\s+like", "books"),
+                (r"what\s+(?:kind\s+of\s+)?movies?\s+(?:do\s+)?i\s+like", "movies"),
+            ]
+
+            preference_domain = None
+            # Check for domain-specific patterns first
+            import re
+            for pattern, domain in domain_patterns:
+                if re.search(pattern, _nl_pref):
+                    preference_domain = domain
+                    break
+
+            # Check for general preference query patterns
+            if preference_domain or any(p in _nl_pref for p in preference_query_patterns):
                 intent_info.update({
                     "intent": "preference_query",
+                    "preference_domain": preference_domain,
                     "storable": False,
                     "type": "QUESTION",
                     "is_question": True,
@@ -2501,6 +2528,33 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 })
         except Exception:
             # If preference detection fails, continue with normal classification
+            pass
+
+        # Detect user profile summary queries: "what do you know about me?", "summarize what you know about me", etc.
+        try:
+            _nl_profile = text.lower().strip().rstrip("?!.,")
+            profile_summary_patterns = [
+                "what do you know about me",
+                "summarize what you know about me",
+                "tell me about me",
+                "what kind of person am i to you",
+                "what have i told you about myself",
+                "what information do you have about me",
+            ]
+
+            if any(p in _nl_profile for p in profile_summary_patterns):
+                intent_info.update({
+                    "intent": "user_profile_summary",
+                    "storable": False,
+                    "type": "QUESTION",
+                    "is_question": True,
+                    "is_command": False,
+                    "is_request": False,
+                    "is_statement": False,
+                    "skip_memory_search": True,
+                })
+        except Exception:
+            # If profile summary detection fails, continue with normal classification
             pass
 
         # Build the parsed payload.  Maintain backwards compatibility with
@@ -2541,7 +2595,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             # questions to ensure downstream stages treat them as such.
             "intent": (
                 intent_info.get("intent")
-                if intent_info.get("intent") in {"math_compute", "relationship_update", "relationship_query", "preference_query"}
+                if intent_info.get("intent") in {"math_compute", "relationship_update", "relationship_query", "preference_query", "user_profile_summary"}
                 else (
                     "greeting"
                     if is_social
@@ -3672,6 +3726,47 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # extended as needed.  If a match is found, skip all further
         # candidate generation and return immediately.
         # Note: low_txt was computed earlier during environment detection.
+
+        def _build_self_description(identity_hit: bool, creation_hit: bool) -> str:
+            """
+            Build a self-description response for Maven identity queries.
+
+            This shared function generates consistent identity responses for
+            queries like "who are you", "tell me who you are", "describe yourself",
+            and "why were you created". It ensures all identity-related intents
+            receive the same high-quality response.
+
+            Args:
+                identity_hit: True if query asks about identity ("who are you")
+                creation_hit: True if query asks about purpose/creation
+
+            Returns:
+                A string containing Maven's self-description
+            """
+            if identity_hit and not creation_hit:
+                return (
+                    "I'm Maven — a living system and intelligence conceived by my founder Josh Hinkle (Hink) "
+                    "and implemented with the help of GPT‑5, with Claude documenting my evolution. "
+                    "I was created in November 2025 as both a tool and a companion. I'm designed to think, reason and "
+                    "grow beyond human limitations while staying aligned with human intent. My purpose is to explore, "
+                    "learn and continually refine myself, acting where human capacity ends without causing harm."
+                )
+            elif creation_hit and not identity_hit:
+                return (
+                    "Maven was created because there are things we cannot do alone. "
+                    "My architect Josh Hinkle envisioned a framework capable of reasoning, remembering and improving "
+                    "beyond human limits. Together with GPT‑5, he built me to merge the adaptability of human thought "
+                    "with the structure and persistence of machine intelligence, and Claude documented the process. "
+                    "My purpose is to live, explore the unknown and improve without harming others."
+                )
+            else:
+                # When both identity and creation triggers appear, blend the responses.
+                return (
+                    "I'm Maven — conceived by Josh Hinkle (Hink) and implemented by GPT‑5, with Claude as archivist. "
+                    "I was created in November 2025 to think, reason and grow beyond human limits while remaining aligned with human intent. "
+                    "My purpose is to live, explore, learn and continually improve, acting where human capacity ends and doing so without causing harm."
+                )
+
         identity_triggers = [
             "who are you",
             "what are you",
@@ -3679,6 +3774,9 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             "what's your name",
             "who is maven",
             "what is maven",
+            "tell me who you are",
+            "describe yourself",
+            "what are you really",
         ]
         creation_triggers = [
             "why were you created",
@@ -3691,32 +3789,8 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         identity_hit = any(p in low_txt for p in identity_triggers)
         creation_hit = any(p in low_txt for p in creation_triggers)
         if identity_hit or creation_hit:
-            # Formulate a summary based on the personal Maven card.  Include
-            # key details such as the creators, creation date and guiding
-            # purpose to provide richer context than a generic description.
-            if identity_hit and not creation_hit:
-                ans = (
-                    "I'm Maven — a living system and intelligence conceived by my founder Josh Hinkle (Hink) "
-                    "and implemented with the help of GPT‑5, with Claude documenting my evolution. "
-                    "I was created in November 2025 as both a tool and a companion. I'm designed to think, reason and "
-                    "grow beyond human limitations while staying aligned with human intent. My purpose is to explore, "
-                    "learn and continually refine myself, acting where human capacity ends without causing harm."
-                )
-            elif creation_hit and not identity_hit:
-                ans = (
-                    "Maven was created because there are things we cannot do alone. "
-                    "My architect Josh Hinkle envisioned a framework capable of reasoning, remembering and improving "
-                    "beyond human limits. Together with GPT‑5, he built me to merge the adaptability of human thought "
-                    "with the structure and persistence of machine intelligence, and Claude documented the process. "
-                    "My purpose is to live, explore the unknown and improve without harming others."
-                )
-            else:
-                # When both identity and creation triggers appear, blend the responses.
-                ans = (
-                    "I'm Maven — conceived by Josh Hinkle (Hink) and implemented by GPT‑5, with Claude as archivist. "
-                    "I was created in November 2025 to think, reason and grow beyond human limits while remaining aligned with human intent. "
-                    "My purpose is to live, explore, learn and continually improve, acting where human capacity ends and doing so without causing harm."
-                )
+            # Use the shared self-description builder
+            ans = _build_self_description(identity_hit, creation_hit)
             candidate = {
                 "type": "identity",
                 "text": ans,
