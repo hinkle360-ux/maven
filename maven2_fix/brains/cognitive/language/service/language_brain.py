@@ -2611,13 +2611,17 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 response_text = None
                 if intent == "relationship_query":
                     try:
-                        # Import get_relationship_fact from memory_librarian
-                        import sys
+                        # Import get_relationship_fact from memory_librarian using importlib
+                        import importlib.util
                         from pathlib import Path as _PathRel
-                        _ml_path = _PathRel(__file__).resolve().parents[2] / "memory_librarian" / "service"
-                        if str(_ml_path) not in sys.path:
-                            sys.path.insert(0, str(_ml_path))
-                        from memory_librarian import get_relationship_fact
+                        _ml_file = _PathRel(__file__).resolve().parents[2] / "memory_librarian" / "service" / "memory_librarian.py"
+                        _spec = importlib.util.spec_from_file_location("memory_librarian_module", _ml_file)
+                        if _spec and _spec.loader:
+                            _ml_module = importlib.util.module_from_spec(_spec)
+                            _spec.loader.exec_module(_ml_module)
+                            get_relationship_fact = _ml_module.get_relationship_fact
+                        else:
+                            raise ImportError("Could not load memory_librarian module")
 
                         # Get user_id from context
                         user_id = ctx.get("user_id") or "default_user"
