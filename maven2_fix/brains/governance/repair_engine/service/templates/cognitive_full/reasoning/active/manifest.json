@@ -1,0 +1,11 @@
+{
+  "name": "reasoning",
+  "version": "baseline_1761871530",
+  "service": "reasoning_brain.py",
+  "required_ops": [
+    "EVALUATE_FACT",
+    "HEALTH"
+  ],
+  "hash": "af58bbd83337e601870829f694d0ce6591e4d15d84b5bf8cbc2a57379d45505a",
+  "created_ts": 1761871530
+}

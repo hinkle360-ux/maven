@@ -1,0 +1,10 @@
+{
+  "name": "language",
+  "version": "baseline_1761871530",
+  "service": "language_brain.py",
+  "required_ops": [
+    "PARSE"
+  ],
+  "hash": "c815bd4b9aa855c948b71e528b49df92fca1ff7099f2ce92159c09df7295d011",
+  "created_ts": 1761871530
+}

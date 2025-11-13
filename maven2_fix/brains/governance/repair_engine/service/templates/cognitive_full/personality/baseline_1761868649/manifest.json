@@ -1,0 +1,11 @@
+{
+  "name": "personality",
+  "version": "baseline_1761868649",
+  "service": "personality_brain.py",
+  "required_ops": [
+    "ADAPT_WEIGHTS_SUGGEST",
+    "LEARN_FROM_RUN"
+  ],
+  "hash": "fa0e5e7ee77d833e594b46a57da24a51008665ed811498ec27e48138a94ca86e",
+  "created_ts": 1761868649
+}

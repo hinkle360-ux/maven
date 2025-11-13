@@ -1,0 +1,10 @@
+{
+  "name": "planner",
+  "version": "baseline_1761871530",
+  "service": "planner_brain.py",
+  "required_ops": [
+    "PLAN"
+  ],
+  "hash": "b2bdfd7f7e3c0bcfc03efce312414583ba08b4ed4134198c069e9041bfb5a176",
+  "created_ts": 1761871530
+}

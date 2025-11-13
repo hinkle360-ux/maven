@@ -1,0 +1,7 @@
+{
+  "title": "Refresh domain bank",
+  "description": "AUTO_REPAIR:domain_bank",
+  "depends_on": [],
+  "condition": null,
+  "priority": 0.5
+}

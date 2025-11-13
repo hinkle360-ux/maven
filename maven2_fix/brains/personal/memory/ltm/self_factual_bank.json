@@ -1,0 +1,12 @@
+{
+  "last_question": {
+    "value": "What is 2+2?",
+    "confidence": 1.0,
+    "promoted_ts": 1762392169.9697156
+  },
+  "last_response": {
+    "value": "4",
+    "confidence": 1.0,
+    "promoted_ts": 1762392169.969718
+  }
+}

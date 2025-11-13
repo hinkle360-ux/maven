@@ -1,0 +1,34 @@
+{
+  "allowed_tasks": [
+    "search_memory",
+    "search_knowledge_graph",
+    "synthesize_findings",
+    "store_results",
+    "load_data",
+    "apply_analysis",
+    "generate_report",
+    "plan_creation",
+    "execute_creation",
+    "review_creation",
+    "python_exec"
+  ],
+  "shell_policy": {
+    "deny_patterns": [
+      "rm ",
+      " sudo",
+      "reboot",
+      "shutdown",
+      "mkfs",
+      "passwd",
+      "wget",
+      "curl",
+      "ftp",
+      "ssh",
+      "|",
+      ";",
+      "&&",
+      "||",
+      ">"
+    ]
+  }
+}

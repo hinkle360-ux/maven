@@ -1,0 +1,9 @@
+{
+  "memory": {
+    "stm_capacity": 20000,
+    "mtm_capacity": 100000,
+    "ltm_capacity": 500000,
+    "rotation_policy": "capacity_based",
+    "auto_consolidate": true
+  }
+}

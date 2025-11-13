@@ -1,0 +1,11 @@
+{
+  "name": "personal",
+  "version": "baseline_1761868649",
+  "service": "personal_brain.py",
+  "required_ops": [
+    "SCORE_BOOST",
+    "WHY"
+  ],
+  "hash": "7027ab50f7fe0121cad9e81903721ddf5394b65324d5cd91ec0b90583a880411",
+  "created_ts": 1761868649
+}

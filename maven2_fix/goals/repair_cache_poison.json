@@ -1,0 +1,7 @@
+{
+  "title": "Repair cache poison",
+  "description": "AUTO_REPAIR:cache_poison",
+  "depends_on": [],
+  "condition": null,
+  "priority": 0.5
+}
