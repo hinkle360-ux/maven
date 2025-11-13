@@ -90,9 +90,91 @@ try:
         ]
     else:
         raise ImportError("Could not load spec for runtime goal_memory")
+except FileNotFoundError:
+    # If runtime_memory directory is not found, quietly use stubs
+    # This is expected when running in minimal configurations
+    from typing import Any, Dict, List, Optional
+
+    def add_goal(
+        title: str,
+        description: Optional[str] = None,
+        *,
+        depends_on: Optional[List[str]] = None,
+        condition: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        deadline_ts: Optional[float] = None,
+        progress: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Stub implementation: returns a minimal goal record."""
+        import uuid
+        import time
+        return {
+            "goal_id": str(uuid.uuid4()),
+            "title": (title or "").strip(),
+            "description": (description or "").strip(),
+            "created_at": time.time(),
+            "completed": False,
+            "stub": True,
+        }
+
+    def get_goals(active_only: bool = False) -> List[Dict[str, Any]]:
+        """Stub implementation: returns empty list."""
+        return []
+
+    def complete_goal(goal_id: str, *, success: bool = True) -> Optional[Dict[str, Any]]:
+        """Stub implementation: returns None."""
+        return None
+
+    def get_goal(goal_id: str) -> Optional[Dict[str, Any]]:
+        """Stub implementation: returns None."""
+        return None
+
+    def get_dependency_chain(goal_id: str) -> List[Dict[str, Any]]:
+        """Stub implementation: returns empty list."""
+        return []
+
+    def summary() -> Dict[str, Any]:
+        """Stub implementation: returns empty summary."""
+        return {
+            "total": 0,
+            "active": 0,
+            "completed": 0,
+            "categories": {},
+            "active_ids": [],
+            "stub": True,
+        }
+
+    def children_of(parent_id: str) -> List[Dict[str, Any]]:
+        """Stub implementation: returns empty list."""
+        return []
+
+    def set_deadline(goal_id: str, deadline_ts: float) -> Optional[Dict[str, Any]]:
+        """Stub implementation: returns None."""
+        return None
+
+    def update_progress(
+        goal_id: str,
+        progress: float,
+        *,
+        metrics: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Stub implementation: returns None."""
+        return None
+
+    __all__ = [
+        "add_goal",
+        "get_goals",
+        "complete_goal",
+        "get_goal",
+        "get_dependency_chain",
+        "summary",
+        "children_of",
+        "set_deadline",
+        "update_progress",
+    ]
 except Exception as e:
-    # If runtime implementation cannot be imported, provide stubs
-    # to prevent cascading failures
+    # For other errors, warn but continue with stubs
     import warnings
     warnings.warn(
         f"Could not import goal_memory from runtime_memory: {e}. "

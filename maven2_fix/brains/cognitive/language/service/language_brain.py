@@ -718,6 +718,15 @@ def nlu_parse(text: str) -> Dict[str, Any]:
             # Only set intent if not already confirmation
             if result.get("intent") is None:
                 result["intent"] = "request"
+        # Detect yes/no questions with auxiliary verbs (do/does/can/is/are)
+        # These patterns catch factual questions like "do birds fly", "can cats jump",
+        # "is water wet", "are birds animals" that don't end with question marks.
+        # Match patterns: "do/does/can/could/will/would/should X Y" or "is/are/was/were X Y"
+        yes_no_pattern = re.match(r"^(do|does|did|can|could|will|would|should|is|are|was|were)\s+\w+", lower)
+        if yes_no_pattern and not result.get("is_question"):
+            result["is_question"] = True
+            if result.get("intent") is None:
+                result["intent"] = "simple_fact_query"
         # Normalise contractions for WH detection
         norm = lower.replace("what's", "what is").replace("where's", "where is").replace("who's", "who is").replace("when's", "when is").replace("how's", "how is").replace("why's", "why is")
         # Detect WH questions at the beginning
