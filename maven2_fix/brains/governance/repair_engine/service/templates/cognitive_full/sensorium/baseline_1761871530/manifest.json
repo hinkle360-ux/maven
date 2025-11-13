@@ -1,0 +1,10 @@
+{
+  "name": "sensorium",
+  "version": "baseline_1761871530",
+  "service": "sensorium_brain.py",
+  "required_ops": [
+    "NORMALIZE"
+  ],
+  "hash": "0a879b57718ea2561e94c042112eaa253ea55d912a21332305f7683816c689b1",
+  "created_ts": 1761871530
+}

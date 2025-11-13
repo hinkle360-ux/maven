@@ -1,0 +1,184 @@
+
+from __future__ import annotations
+from typing import Dict, Any, List
+import json
+
+def _is_question_text(text: str) -> bool:
+    try:
+        return str(text or "").strip().endswith("?")
+    except Exception:
+        return False
+
+def _score_evidence(proposed: Dict[str, Any], evidence: Dict[str, Any]) -> float:
+    """Primitive evidence score: 0.8 if any retrieved content matches substring; else 0.4"""
+    try:
+        content = str(proposed.get("content","")).strip().lower()
+        for it in (evidence or {}).get("results", []):
+            if isinstance(it, dict):
+                c = str(it.get("content","")).strip().lower()
+                if c and (content == c or content in c or c in content):
+                    return 0.8
+    except Exception:
+        pass
+    return 0.4 if proposed.get("content") else 0.0
+
+def _route_for(conf: float) -> str:
+    if conf >= 0.7:
+        return "factual"
+    if conf >= 0.4:
+        return "working_theories"
+    return "stm_only"
+
+def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
+    op = (msg or {}).get("op","").upper()
+    mid = (msg or {}).get("mid")
+    payload = (msg or {}).get("payload") or {}
+
+    if op == "EVALUATE_FACT":
+        # Extract the proposed fact and any original query information
+        proposed = (payload or {}).get("proposed_fact") or {}
+        # Some callers (Memory Librarian) will include original_query in the proposed fact
+        orig_q = str(proposed.get("original_query", "") or "")
+        content = str(proposed.get("content", ""))
+
+        # If the original query is a question, treat this operation as answering the question
+        if _is_question_text(orig_q):
+            # Look through provided evidence results to find a candidate answer
+            evidence = payload.get("evidence") or {}
+            results = (evidence.get("results") or []) if isinstance(evidence, dict) else []
+            # Pick the first valid answer record from memory. We ignore any records
+            # whose content is empty or appears to be a question itself. If the
+            # record's content looks like a JSON string (as stored by the pipeline),
+            # extract the "text" field.
+            ans_record = None
+            answer_text = None
+            for it in results:
+                if not isinstance(it, dict):
+                    continue
+                raw_content = str(it.get("content", "")).strip()
+                if not raw_content:
+                    continue
+                # Attempt to parse JSON content (e.g. {"text": "...", "temperature": ...})
+                parsed_text = None
+                if raw_content.startswith("{") and raw_content.endswith("}"):
+                    try:
+                        data = json.loads(raw_content)
+                        parsed_text = str(data.get("text", raw_content)).strip()
+                    except Exception:
+                        parsed_text = raw_content
+                else:
+                    parsed_text = raw_content
+                # Skip if parsed text is empty or still looks like a question
+                if not parsed_text or parsed_text.endswith("?"):
+                    continue
+                ans_record = it
+                answer_text = parsed_text
+                break
+            if ans_record and answer_text:
+                # Use the stored confidence if present, otherwise default to 0.85
+                try:
+                    conf_val = float(ans_record.get("confidence", 0.85))
+                except Exception:
+                    conf_val = 0.85
+                if conf_val < 0.0:
+                    conf_val = 0.0
+                if conf_val > 1.0:
+                    conf_val = 1.0
+                return {"ok": True, "op": op, "mid": mid, "payload": {
+                    "verdict": "TRUE",
+                    "mode": "ANSWERED",
+                    "confidence": conf_val,
+                    "routing_order": {"target_bank": None, "action": None},
+                    "supported_by": [ans_record.get("id")] if ans_record.get("id") else [],
+                    "contradicted_by": [],
+                    "answer": answer_text,
+                    "answer_source_id": ans_record.get("id"),
+                    "weights_used": {"rule": "question_answer_v1"}
+                }}
+            else:
+                # No suitable evidence found for the question
+                return {"ok": True, "op": op, "mid": mid, "payload": {
+                    "verdict": "UNANSWERED",
+                    "mode": "QUESTION_INPUT",
+                    "confidence": 0.0,
+                    "routing_order": {"target_bank": None, "action": None},
+                    "supported_by": [],
+                    "contradicted_by": [],
+                    "weights_used": {"rule": "question_answer_v1"}
+                }}
+
+        # --- Primitive safeguard: questions are not facts ---
+        # If the proposed content itself ends with a question mark (rare but possible),
+        # treat similarly to unanswered questions
+        if _is_question_text(content):
+            return {"ok": True, "op": op, "mid": mid, "payload": {
+                "verdict": "UNANSWERED",
+                "mode": "QUESTION_INPUT",
+                "confidence": 0.0,
+                "routing_order": {"target_bank": None, "action": None},
+                "supported_by": [],
+                "contradicted_by": [],
+                "weights_used": {"rule": "primitive_reason_v2"}
+            }}
+
+        # Weighted confidence calculation for factual statements
+        base_conf = 0.5
+        try:
+            base_conf = float(proposed.get("confidence", 0.5))
+        except Exception:
+            base_conf = 0.5
+        conf = base_conf
+        supported_by: List[str] = []
+        contradicted_by: List[str] = []
+        evidence = payload.get("evidence") or {}
+        try:
+            for it in (evidence.get("results") or []):
+                if not isinstance(it, dict):
+                    continue
+                c = str(it.get("content", "")).strip().lower()
+                proposed_c = str(proposed.get("content", "")).strip().lower()
+                record_type = str(it.get("type", "")).lower()
+                if c and (proposed_c == c or proposed_c in c or c in proposed_c):
+                    conf += 0.05
+                    rec_id = it.get("id")
+                    if rec_id:
+                        supported_by.append(rec_id)
+                elif record_type == "contradiction":
+                    conf -= 0.1
+                    rec_id = it.get("id")
+                    if rec_id:
+                        contradicted_by.append(rec_id)
+        except Exception:
+            pass
+        # Clamp confidence
+        if conf < 0.0:
+            conf = 0.0
+        if conf > 1.0:
+            conf = 1.0
+        if conf >= 0.85:
+            verdict = "TRUE"
+            mode = "VERIFIED"
+        elif conf >= 0.5:
+            verdict = "THEORY"
+            mode = "EDUCATED_GUESS"
+        else:
+            verdict = "UNKNOWN"
+            mode = "NO_EVIDENCE"
+        routing_order = {
+            "target_bank": "unknown",
+            "action": "STORE"
+        }
+        return {"ok": True, "op": op, "mid": mid, "payload": {
+            "verdict": verdict,
+            "mode": mode,
+            "confidence": conf,
+            "routing_order": routing_order,
+            "supported_by": supported_by,
+            "contradicted_by": contradicted_by,
+            "weights_used": {"rule": "primitive_reason_v2"}
+        }}
+
+    if op == "HEALTH":
+        return {"ok": True, "op": op, "mid": mid, "payload": {"status":"ok"}}
+
+    return {"ok": False, "op": op, "mid": mid, "error": {"code": "UNSUPPORTED_OP", "message": op}}

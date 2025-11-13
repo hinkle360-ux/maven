@@ -1,0 +1,35 @@
+{
+  "title": "Shapes & Animals \u2014 Learn + Error Catch",
+  "description": "Correct facts + contradictions to exercise TAC.",
+  "input_file": "shapes_animals_inputs.jsonl",
+  "phases": [
+    {
+      "name": "TEACH_GOOD",
+      "lines": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "name": "TEACH_BAD",
+      "lines": [
+        8,
+        9
+      ]
+    },
+    {
+      "name": "ASK",
+      "lines": [
+        10,
+        11,
+        12,
+        13
+      ]
+    }
+  ]
+}

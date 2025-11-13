@@ -1,0 +1,10 @@
+{
+  "name": "system_history",
+  "version": "baseline_1761868649",
+  "service": "system_history_brain.py",
+  "required_ops": [
+    "LOG_RUN_SUMMARY"
+  ],
+  "hash": "ea0aa6b881e68e815e847609310adc1ddd845ee913f0fa5e0e5f5e89dc06536c",
+  "created_ts": 1761868649
+}

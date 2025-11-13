@@ -1,0 +1,45 @@
+# Upgrade Runbook
+# ================
+#
+# This runbook defines the procedure for applying an upgrade to Maven.
+# Upgrades are packaged as bundles containing new templates or
+# configuration changes.  Every upgrade must be authorised with a
+# governance token.  The agent will verify the bundle, perform a
+# dry‑run, apply the upgrade, and then re‑verify the system.  A
+# rollback may be executed within the token's TTL if the upgrade
+# introduces any issues.
+
+upgrade_steps:
+  - name: verify_signature
+    description: |
+      Validate the cryptographic signature of the upgrade bundle
+      and ensure the manifest matches the expected root hash.  If
+      signature verification fails, abort the upgrade.
+
+  - name: dry_run
+    description: |
+      Unpack the upgrade bundle into a staging area and compute
+      differences against the current active templates.  Report any
+      files that will be modified.  No changes to the live system
+      are made during this step.
+
+  - name: apply
+    description: |
+      Apply the upgrade to the live repository.  Requires a
+      governance authorisation token.  The agent will copy files
+      from the staging area into their destination paths and
+      update the templates integrity manifest.  A backup is
+      automatically created before applying changes.
+
+  - name: post_apply_proof
+    description: |
+      After applying the upgrade, run the health sweep and
+      integrity verifier.  If any issues are detected, generate a
+      report and do not proceed to the next step.
+
+  - name: rollback
+    description: |
+      If the upgrade introduced problems and the token is still
+      valid, restore the system from the pre‑upgrade backup.  This
+      step must be explicitly invoked.  Rollback actions are
+      logged and require the same scope as the original upgrade.

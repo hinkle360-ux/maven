@@ -1,0 +1,10 @@
+{
+  "name": "affect_priority",
+  "version": "baseline_1761871530",
+  "service": "affect_priority_brain.py",
+  "required_ops": [
+    "SCORE"
+  ],
+  "hash": "754d860a2220acd480a81d08393b21eaa9e2fbcb7cecdf4fcfb8b3f25e31482d",
+  "created_ts": 1761871530
+}

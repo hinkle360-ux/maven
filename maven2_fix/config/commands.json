@@ -1,0 +1,19 @@
+{
+  "status": {
+    "handler": "status",
+    "description": "Report the current status of the autonomous agent including the number of goals and running state."
+  },
+  "cache": {
+    "description": "Cache operations",
+    "subcommands": {
+      "purge": {
+        "handler": "cache_purge",
+        "description": "Remove any persisted fast cache entries so that new answers are recomputed."
+      }
+    }
+  },
+  "input": {
+    "handler": "input",
+    "description": "Ingest an external file into the system.  This command is a placeholder and is not yet implemented."
+  }
+}

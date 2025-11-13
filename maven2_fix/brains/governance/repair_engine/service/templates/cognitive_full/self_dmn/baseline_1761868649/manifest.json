@@ -1,0 +1,10 @@
+{
+  "name": "self_dmn",
+  "version": "baseline_1761868649",
+  "service": "self_dmn_brain.py",
+  "required_ops": [
+    "ANALYZE_INTERNAL"
+  ],
+  "hash": "45ff7e561ed3df4355357d99506c9a12096ff35fd2f9771b786cdbf1f2766e66",
+  "created_ts": 1761868649
+}

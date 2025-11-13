@@ -1,0 +1,11 @@
+{
+  "name": "memory_librarian",
+  "version": "baseline_1761871530",
+  "service": "memory_librarian.py",
+  "required_ops": [
+    "RUN_PIPELINE",
+    "HEALTH_CHECK"
+  ],
+  "hash": "7a4899e5e4fe122967a2f85d67b2fa663d696fd7eff7fb5049ed4e43f31eab96",
+  "created_ts": 1761871530
+}

@@ -1,0 +1,513 @@
+
+from __future__ import annotations
+from typing import Dict, Any
+import importlib.util, sys, time, json, re
+from pathlib import Path
+
+# === Paths / Wiring ==========================================================
+
+THIS_FILE = Path(__file__).resolve()
+SERVICE_DIR = THIS_FILE.parent
+COG_ROOT = SERVICE_DIR.parent.parent          # brains/cognitive
+MAVEN_ROOT = COG_ROOT.parent.parent           # brains
+
+sys.path.insert(0, str(MAVEN_ROOT))
+
+from api.utils import generate_mid, success_response, error_response, write_report, CFG
+from api.memory import ensure_dirs, count_lines
+
+# === Module loaders ==========================================================
+
+def _load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+def _brain_module(name: str):
+    svc = COG_ROOT / name / "service" / f"{name}_brain.py"
+    return _load_module(svc, f"brain_{name}_service")
+
+def _bank_module(name: str):
+    svc = MAVEN_ROOT / "domain_banks" / name / "service" / f"{name}_bank.py"
+    if not svc.exists():
+        # legacy path: brains/domain_banks/...
+        svc = MAVEN_ROOT / "brains" / "domain_banks" / name / "service" / f"{name}_bank.py"
+    return _load_module(svc, f"bank_{name}_service")
+
+def _gov_module():
+    svc = MAVEN_ROOT / "brains" / "governance" / "policy_engine" / "service" / "policy_engine.py"
+    return _load_module(svc, "policy_engine_service")
+
+def _repair_module():
+    svc = MAVEN_ROOT / "brains" / "governance" / "repair_engine" / "service" / "repair_engine.py"
+    return _load_module(svc, "repair_engine_service")
+
+def _personal_module():
+    svc = MAVEN_ROOT / "brains" / "personal" / "service" / "personal_brain.py"
+    return _load_module(svc, "personal_brain_service")
+
+def _router_module():
+    # learned router under reasoning service
+    svc = COG_ROOT / "reasoning" / "service" / "learned_router.py"
+    return _load_module(svc, "learned_router_service")
+
+# === Helpers =================================================================
+
+_ALL_BANKS = [
+    "arts","science","history","economics","geography",
+    "language_arts","law","math","philosophy","technology",
+    "theories_and_contradictions"
+]
+
+def _retrieve_from_banks(query: str, k: int = 5) -> Dict[str, Any]:
+    results = []
+    searched = []
+    for b in _ALL_BANKS:
+        try:
+            svc = _bank_module(b)
+            r = svc.service_api({"op": "RETRIEVE", "payload": {"query": query, "limit": k}})
+            if r.get("ok"):
+                pay = r.get("payload") or {}
+                rr = pay.get("results") or []
+                for item in rr:
+                    if isinstance(item, dict):
+                        item.setdefault("source_bank", b)
+                results.extend(rr)
+                searched.append(b)
+        except Exception:
+            pass
+    return {"results": results, "banks": searched, "banks_queried": searched}
+
+def _scan_counts(root: Path) -> Dict[str, Dict[str, int]]:
+    from api.memory import tiers_for
+    out: Dict[str, Dict[str, int]] = {}
+    brains = [
+        "sensorium","planner","language","pattern_recognition","reasoning",
+        "affect_priority","personality","self_dmn","system_history","memory_librarian"
+    ]
+    for brain in brains:
+        broot = root / brain
+        try:
+            tiers = tiers_for(broot)
+            out[brain] = {tier: count_lines(path) for tier, path in tiers.items()}
+        except Exception:
+            out[brain] = {}
+    try:
+        personal_root = MAVEN_ROOT / "brains" / "personal"
+        tiers = tiers_for(personal_root)
+        out["personal"] = {tier: count_lines(path) for tier, path in tiers.items()}
+    except Exception:
+        out["personal"] = {}
+    return out
+
+def _extract_definition(text: str):
+    # Primitive "X is a Y" pattern to teach the router definitions when TRUE
+    m = re.match(r'^(?P<term>[A-Za-z0-9 ]{1,40})\s+(is|are)\s+(a|an)?\s*(?P<klass>[A-Za-z0-9 ]{1,40})\.?$', text.strip(), re.I)
+    if not m:
+        return None, None
+    term = (m.group("term") or "").strip().lower()
+    klass = (m.group("klass") or "").strip().lower()
+    if not term or not klass or term == klass:
+        return None, None
+    return term, klass
+
+def _best_memory_exact(evidence: Dict[str, Any], content: str):
+    try:
+        for it in (evidence or {}).get("results", []):
+            if isinstance(it, dict) and str(it.get("content","")).strip().lower() == str(content).strip().lower():
+                return it
+    except Exception:
+        pass
+    return None
+
+# === Service API =============================================================
+
+def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
+    op = (msg or {}).get("op","").upper()
+    mid = msg.get("mid") or generate_mid()
+    payload = msg.get("payload") or {}
+
+    if op == "RUN_PIPELINE":
+        text = str(payload.get("text",""))
+        conf = float(payload.get("confidence", 0.8))
+
+        # Personality snapshot (best-effort)
+        try:
+            from brains.cognitive.personality.service import personality_brain
+            prefs = personality_brain._read_preferences()
+        except Exception:
+            prefs = {"prefer_explain": True, "tone": "neutral", "verbosity_target": 1.0}
+
+        ctx: Dict[str, Any] = {
+            "original_query": text,
+            "timestamp": time.time(),
+            "personality_snapshot": prefs
+        }
+
+        # Stage 1b — Personality adjust (observed via Governance)
+        try:
+            from brains.cognitive.personality.service import personality_brain
+            sug_res = personality_brain.service_api({"op":"ADAPT_WEIGHTS_SUGGEST"}) or {}
+            suggestion = (sug_res.get("payload") or {}).get("suggestion") or {}
+        except Exception:
+            suggestion = {}
+
+        try:
+            gov = _gov_module()
+            adj = gov.service_api({"op":"ENFORCE","payload":{"action":"ADJUST_WEIGHTS","payload": suggestion}})
+            approved = bool((adj.get("payload") or {}).get("allowed"))
+        except Exception:
+            approved = False
+
+        ctx["stage_1b_personality_adjustment"] = {"proposal": suggestion, "approved": approved}
+
+        # S1..S4
+        s = _brain_module("sensorium").service_api({"op":"NORMALIZE","payload":{"text": text}})
+        p = _brain_module("planner").service_api({"op":"PLAN","payload":{"text": text, "delta": (suggestion.get("planner") if approved else {})}})
+        l = _brain_module("language").service_api({"op":"PARSE","payload":{"text": text, "delta": (suggestion.get("language") if approved else {})}})
+        try:
+            pr = _brain_module("pattern_recognition").service_api({"op":"ANALYZE","payload":{"text": text}})
+        except Exception:
+            pr = {"ok": True, "payload": {"skipped": True}}
+
+        ctx["stage_1_sensorium"] = s.get("payload", {})
+        ctx["stage_2_planner"] = p.get("payload", {})
+        if not ctx["stage_2_planner"]:
+            ctx["stage_2_planner"] = {
+                "goal": f"Satisfy user request: {text}",
+                "intents": ["retrieve_relevant_memories","compose_response"],
+                "notes": "Planner fallback: source=Librarian safeguard"
+            }
+        ctx["stage_3_language"] = l.get("payload", {})
+        ctx["stage_4_pattern_recognition"] = pr.get("payload", {})
+
+        # Stage 2R — memory-first retrieval (fan to all banks + TAC)
+        mem = _retrieve_from_banks(text, k=5)
+        ctx["stage_2R_memory"] = mem
+
+        # Record upstream weights used (if present)
+        ctx["stage_0_weights_used"] = {
+            "sensorium": ctx["stage_1_sensorium"].get("weights_used"),
+            "planner": ctx["stage_2_planner"].get("weights_used"),
+            "language": ctx["stage_3_language"].get("weights_used"),
+        }
+
+        # --- Stage 8 — Reasoning (intent-aware proposal: do NOT store raw questions) ---
+        intent = (ctx.get("stage_3_language") or {}).get("intent", "statement")
+        proposed_content = None
+        if intent == "question":
+            memory_results = (ctx.get("stage_2R_memory") or {}).get("results", [])
+            if memory_results:
+                proposed_content = str(memory_results[0].get("content","")).strip()
+            else:
+                proposed_content = None
+        else:
+            proposed_content = text
+
+        if proposed_content:
+            # Include the original query in the proposed fact so the reasoning brain can
+            # detect question inputs and generate answers based on memory evidence.  The
+            # original_query key is always the raw user text, regardless of whether
+            # proposed_content was drawn from memory or not.
+            proposed = {
+                "content": proposed_content,
+                "confidence": conf,
+                "source": "user_input",
+                "original_query": text
+            }
+            v = _brain_module("reasoning").service_api({
+                "op": "EVALUATE_FACT",
+                "payload": {
+                    "proposed_fact": proposed,
+                    "evidence": ctx.get("stage_2R_memory")
+                }
+            })
+            ctx["stage_8_validation"] = v.get("payload", {})
+        else:
+            # If there is no proposed content (e.g. an unanswered question), mark
+            # the verdict so that Stage 9 skips storage and the system can prompt
+            # for additional information.
+            ctx["stage_8_validation"] = {
+                "verdict": "SKIP_STORAGE",
+                "mode": "UNANSWERED_QUESTION",
+                "confidence": 0.0,
+                "route": None,
+                "rationale": "Questions are not stored without answers"
+            }
+
+        # Stage 8b — Governance
+        bias_profile = {
+            "planner": ctx["stage_2_planner"].get("weights_used"),
+            "language": ctx["stage_3_language"].get("weights_used"),
+            "reasoning": ctx["stage_8_validation"].get("weights_used"),
+            "personality": prefs,
+            "adjustment_proposal": suggestion
+        }
+        gov = _gov_module()
+        enf = gov.service_api({"op":"ENFORCE","payload":{"action":"STORE","payload": {"content": proposed_content}, "bias_profile": bias_profile}})
+        ctx["stage_8b_governance"] = enf.get("payload", {})
+        allowed = bool(ctx["stage_8b_governance"].get("allowed", False))
+
+        # Find duplicates against retrieved evidence (exact match)
+        match = _best_memory_exact(ctx.get("stage_2R_memory"), proposed_content or "")
+        duplicate = bool(match)
+
+        # Stage 6 — candidates
+        try:
+            cands = _brain_module("language").service_api({"op":"GENERATE_CANDIDATES","payload": ctx})
+            ctx["stage_6_candidates"] = cands.get("payload", {})
+        except Exception:
+            ctx["stage_6_candidates"] = {}
+
+        # Stage 10 — finalize
+        try:
+            fin = _brain_module("language").service_api({"op":"FINALIZE","payload": ctx})
+            ctx["stage_10_finalize"] = fin.get("payload", {})
+        except Exception:
+            ctx["stage_10_finalize"] = {}
+
+        # Stage 9 — Storage (routing-aware + router assist + TAC promotion)
+        if str((ctx.get("stage_8_validation") or {}).get("verdict","")).upper() == "SKIP_STORAGE":
+            ctx["stage_9_storage"] = {"skipped": True, "reason": "question_without_answer"}
+        elif allowed:
+            routing = ctx.get("stage_8_validation", {}).get("routing_order", {}) or {}
+            target_bank = routing.get("target_bank") or "theories_and_contradictions"
+            action = routing.get("action") or "STORE"
+
+            # If Reasoning didn't choose a bank, ask learned router
+            if not target_bank or target_bank == "unknown":
+                try:
+                    rr = _router_module().service_api({"op":"ROUTE","payload":{"text": proposed_content or text}})
+                    target_bank = (rr.get("payload") or {}).get("target_bank") or "theories_and_contradictions"
+                    ctx.setdefault("stage_8_validation", {}).setdefault("router_scores", (rr.get("payload") or {}).get("scores"))
+                    ctx["stage_8_validation"]["router_signals"] = (rr.get("payload") or {}).get("signals")
+                except Exception:
+                    target_bank = "theories_and_contradictions"
+
+            if duplicate and target_bank != "theories_and_contradictions":
+                try:
+                    # Build a fact payload similar to standard storage
+                    verdict = str((ctx.get("stage_8_validation") or {}).get("verdict", "")).upper()
+                    conf_val = float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0))
+                    if verdict == "TRUE":
+                        ver_level = "validated"
+                    elif verdict == "THEORY":
+                        ver_level = "educated_guess"
+                    else:
+                        ver_level = "unknown"
+                    fact_payload = {
+                        "content": proposed_content or text,
+                        "confidence": conf_val,
+                        "verification_level": ver_level,
+                        "source": "user_input",
+                        "validated_by": "reasoning",
+                        "metadata": {
+                            "supported_by": (ctx.get("stage_8_validation") or {}).get("supported_by", []),
+                            "contradicted_by": (ctx.get("stage_8_validation") or {}).get("contradicted_by", []),
+                            "from_pipeline": True
+                        }
+                    }
+                    resp_store = _bank_module(target_bank).service_api({"op": "STORE", "payload": {"fact": fact_payload}})
+                    superseded_id = None
+                    if isinstance(match, dict) and match.get("source_bank") == "theories_and_contradictions":
+                        superseded_id = match.get("id")
+                        try:
+                            _bank_module("theories_and_contradictions").service_api({
+                                "op": "SUPERSEDE",
+                                "payload": {"id": superseded_id, "by_bank": target_bank}
+                            })
+                        except Exception:
+                            pass
+                    ctx["stage_9_storage"] = {
+                        "skipped": False,
+                        "action": "PROMOTE_DUPLICATE",
+                        "bank": target_bank,
+                        "superseded_id": superseded_id,
+                        "result": (resp_store.get("payload") or resp_store)
+                    }
+                except Exception as e:
+                    ctx["stage_9_storage"] = {"skipped": True, "reason": str(e), "bank": target_bank}
+            else:
+                try:
+                    # Theories and contradictions bank uses custom store operations
+                    if target_bank == "theories_and_contradictions":
+                        # Always treat low-confidence submissions as theories
+                        fact_payload = {
+                            "content": proposed_content or text,
+                            "confidence": float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0)),
+                            "source_brain": "reasoning",
+                            "linked_fact_id": None,
+                            "contradicts": [],
+                            "status": "open",
+                            "verification_level": "educated_guess",
+                            "metadata": {
+                                "supported_by": (ctx.get("stage_8_validation") or {}).get("supported_by", []),
+                                "contradicted_by": (ctx.get("stage_8_validation") or {}).get("contradicted_by", []),
+                                "from_pipeline": True
+                            },
+                        }
+                        # For now all uncertain content becomes a theory
+                        resp = _bank_module(target_bank).service_api({"op": "STORE_THEORY", "payload": {"fact": fact_payload}})
+                        ctx["stage_9_storage"] = {
+                            "skipped": False,
+                            "action": action,
+                            "bank": target_bank,
+                            "result": (resp.get("payload") or resp)
+                        }
+                    else:
+                        # Build a fact payload for generic banks
+                        verdict = str((ctx.get("stage_8_validation") or {}).get("verdict", "")).upper()
+                        conf_val = float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0))
+                        # Determine verification level based on verdict
+                        if verdict == "TRUE":
+                            ver_level = "validated"
+                        elif verdict == "THEORY":
+                            ver_level = "educated_guess"
+                        else:
+                            ver_level = "unknown"
+                        fact_payload = {
+                            "content": proposed_content or text,
+                            "confidence": conf_val,
+                            "verification_level": ver_level,
+                            "source": "user_input",
+                            "validated_by": "reasoning",
+                            "metadata": {
+                                "supported_by": (ctx.get("stage_8_validation") or {}).get("supported_by", []),
+                                "contradicted_by": (ctx.get("stage_8_validation") or {}).get("contradicted_by", []),
+                                "from_pipeline": True
+                            }
+                        }
+                        # Call bank with proper fact wrapper
+                        resp = _bank_module(target_bank).service_api({"op": "STORE", "payload": {"fact": fact_payload}})
+                        ctx["stage_9_storage"] = {
+                            "skipped": False,
+                            "action": action,
+                            "bank": target_bank,
+                            "result": (resp.get("payload") or resp)
+                        }
+                except Exception as e:
+                    ctx["stage_9_storage"] = {"skipped": True, "reason": str(e), "bank": target_bank}
+        else:
+            ctx["stage_9_storage"] = {"skipped": True, "reason": "governance_denied"}
+
+        # Learning hooks after successful store
+        try:
+            if not ctx.get("stage_9_storage", {}).get("skipped"):
+                bank = ctx["stage_9_storage"].get("bank")
+                # vocab learn
+                try:
+                    _router_module().service_api({"op":"LEARN","payload":{"text": proposed_content or text, "bank": bank}})
+                except Exception:
+                    pass
+                # definition learn
+                try:
+                    term, klass = _extract_definition(proposed_content or text)
+                    verdict = str(ctx.get("stage_8_validation", {}).get("verdict","")).upper()
+                    if term and klass and verdict == "TRUE":
+                        _router_module().service_api({"op":"LEARN_DEFINITION","payload":{"term": term, "klass": klass}})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Stage 10b — Personality feedback
+        try:
+            from brains.cognitive.personality.service import personality_brain
+            fb = {
+                "tone": ctx.get("stage_10_finalize", {}).get("tone"),
+                "verbosity": ctx.get("stage_10_finalize", {}).get("verbosity"),
+                "transparency": ctx.get("stage_10_finalize", {}).get("transparency")
+            }
+            personality_brain.service_api({"op":"LEARN_FROM_RUN","payload": fb})
+            ctx["stage_10_personality_feedback"] = {"logged": True}
+        except Exception as e:
+            ctx["stage_10_personality_feedback"] = {"logged": False, "error": str(e)}
+
+        # Stage 11 — Personal brain (style-only)
+        try:
+            per = _personal_module()
+            per_boost = per.service_api({"op":"SCORE_BOOST","payload":{"subject": text}})
+            per_why = per.service_api({"op":"WHY","payload":{"subject": text}})
+            ctx["stage_11_personal_influence"] = {
+                **(per_boost.get("payload") or {}),
+                "why": (per_why.get("payload") or {}).get("hypothesis"),
+                "signals": (per_why.get("payload") or {}).get("signals", [])
+            }
+        except Exception as e:
+            ctx["stage_11_personal_influence"] = {"error": str(e)}
+
+        # Stage 12 — System history
+        try:
+            hist = _brain_module("system_history")
+            hist.service_api({"op":"LOG_RUN_SUMMARY","payload":{
+                "ts": int(time.time()),
+                "text": text,
+                "mode": ctx["stage_8_validation"].get("mode"),
+                "bank": ctx.get("stage_9_storage", {}).get("bank"),
+                "personal_boost": (ctx.get("stage_11_personal_influence") or {}).get("boost", 0.0)
+            }})
+            ctx["stage_12_system_history"] = {"logged": True}
+        except Exception as e:
+            ctx["stage_12_system_history"] = {"logged": False, "error": str(e)}
+
+        # Stage 13 — Self-DMN
+        try:
+            sdmn = _brain_module("self_dmn")
+            met = sdmn.service_api({"op":"ANALYZE_INTERNAL","payload":{"window": 10}})
+            ctx["stage_13_self_dmn"] = {"metrics": (met.get("payload") or {}).get("metrics")}
+        except Exception as e:
+            ctx["stage_13_self_dmn"] = {"error": str(e)}
+
+        # Write system report
+        write_report("system", f"run_{int(time.time())}.json", json.dumps(ctx, indent=2))
+        return success_response(op, mid, {"context": ctx})
+
+    if op == "HEALTH_CHECK":
+        counts = _scan_counts(COG_ROOT)
+        rotated = []
+        limit = CFG["rotation"]["stm_records"] * 2
+        rep = _repair_module()
+        for brain, tiers in counts.items():
+            stm_count = int(tiers.get("stm", 0))
+            if stm_count > limit:
+                if brain == "personal":
+                    stm_path = (MAVEN_ROOT / "brains" / "personal" / "memory" / "stm" / "records.jsonl").resolve()
+                else:
+                    stm_path = (COG_ROOT / brain / "memory" / "stm" / "records.jsonl").resolve()
+                rep.service_api({"op":"REPAIR","payload":{"rule":"memory_overflow","target": str(stm_path)}})
+                rotated.append({"brain": brain, "stm_count": stm_count, "rule":"memory_overflow"})
+        write_report("system", f"health_{int(time.time())}.json", json.dumps({"counts": counts, "rotations": rotated}, indent=2))
+        return success_response(op, mid, {"rotations": rotated, "counts": counts})
+
+    elif op == "CORRECT":
+        old_statement = (payload or {}).get("old")
+        new_statement = (payload or {}).get("new")
+        reason = (payload or {}).get("reason", "user_correction")
+        if not old_statement or not new_statement:
+            return error_response(op, mid, "BAD_REQUEST", "Provide 'old' and 'new' in payload.")
+        # Find the old record across banks
+        try:
+            old_hits = _retrieve_from_banks(str(old_statement), k=1)
+            hits = (old_hits or {}).get("results") or []
+            if not hits:
+                return error_response(op, mid, "NOT_FOUND", "Original statement not found for correction")
+            old_rec = hits[0]
+            old_id = old_rec.get("id")
+            old_bank = old_rec.get("source_bank") or "theories_and_contradictions"
+            # Mark old as superseded
+            try:
+                _bank_module(old_bank).service_api({
+                    "op": "SUPERSEDE",
+                    "payload": {"id": old_id, "reason": reason}
+                })
+            except Exception:
+                pass
+            # Store the corrected statement through normal pipeline
+            return service_api({"op": "RUN_PIPELINE", "payload": {"text": str(new_statement), "confidence": 0.9}})
+        except Exception as e:
+            return error_response(op, mid, "CORRECT_FAILED", str(e))
+
+    # Fallback for unsupported operations
+    return error_response(op, mid, "UNSUPPORTED_OP", op)

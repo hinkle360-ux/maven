@@ -1,0 +1,19 @@
+{
+  "the red planet": "mars",
+  "red planet": "mars",
+  "the big apple": "new york",
+  "big apple": "new york",
+  "global warming": "climate change",
+  "martian world": "mars",
+  "mars": "the martian world",
+  "4": "2+2",
+  "paris": "the capital of france",
+  "climate crisis": "climate change",
+  "cc": "climate change",
+  "i'm going to try my best to answer, but i may not have all the information.": "photosynthesis"
+  ,
+  // Add coding-related synonyms to improve understanding of common typos and
+  // alternate spellings.  This helps the language model associate "phyton"
+  // with "python" when processing code-related requests or questions.
+  "phyton": "python"
+}

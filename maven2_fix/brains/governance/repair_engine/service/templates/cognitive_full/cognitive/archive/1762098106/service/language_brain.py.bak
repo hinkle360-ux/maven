@@ -1,0 +1,129 @@
+
+from __future__ import annotations
+from typing import Dict, Any, List
+import re, time
+
+def _is_question(text: str) -> bool:
+    return (text or "").strip().endswith("?")
+
+def _clean(s: str) -> str:
+    return " ".join((s or "").split())
+
+def _best_evidence(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
+    mem = ctx.get("stage_2R_memory") or {}
+    results = mem.get("results") or []
+    for it in results:
+        if isinstance(it, dict) and it.get("source_bank") and it.get("source_bank") != "theories_and_contradictions":
+            return it
+    return results[0] if results else None
+
+def _answerize(question: str, evidence: str | None) -> str:
+    q = (question or "").strip()
+    e = (evidence or "").strip() if evidence else ""
+    if re.match(r'^(is|are|can|does|do|was|were)\b', q.lower()) and e:
+        if any(kw in e.lower() for kw in [" not ", "no "]):
+            return "No."
+        return "Yes."
+    if e:
+        return e if len(e) <= 140 else (e[:137] + "...")
+    return "I don’t know that yet."
+
+def _transparency_tag(verdict: str, confidence: float, has_evidence: bool) -> str:
+    v = (verdict or "").upper()
+    if v == "TRUE" and has_evidence:
+        return "validated"
+    if v == "TRUE" and not has_evidence:
+        return "asserted_true"
+    if v in ("THEORY","UNKNOWN"):
+        return "educated_guess"
+    if v in ("FALSE","REJECT","CONTRADICTION"):
+        return "correction"
+    return "unspecified"
+
+def _tone_wrap(text: str, tone: str) -> str:
+    return text
+
+def _apply_verbosity(text: str, verbosity: float) -> str:
+    try:
+        v = float(verbosity or 1.0)
+    except Exception:
+        v = 1.0
+    if v >= 1.2 and not (text or "").endswith("."):
+        return (text or "") + "."
+    return text
+
+def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
+    op = (msg or {}).get("op","").upper()
+    mid = (msg or {}).get("mid")
+    payload = (msg or {}).get("payload") or {}
+
+    if op == "PARSE":
+        text = _clean(str(payload.get("text","")))
+        parsed = {
+            "is_question": _is_question(text),
+            "intent": "question" if _is_question(text) else "statement",
+            "length": len(text),
+            "entities": [],
+            "weights_used": {"parse_rule":"anti_echo_v1"}
+        }
+        return {"ok": True, "op": op, "mid": mid, "payload": parsed}
+
+    if op == "GENERATE_CANDIDATES":
+        ctx = payload if isinstance(payload, dict) else {}
+        text = _clean(str(ctx.get("original_query","")))
+        is_q = _is_question(text)
+        ev = _best_evidence(ctx)
+        ev_text = (ev or {}).get("content")
+        has_ev = bool(ev_text)
+
+        candidates: List[Dict[str, Any]] = []
+        if has_ev:
+            ans = _answerize(text, ev_text) if is_q else "Noted. I’ve stored this."
+            candidates.append({"type": "direct_factual","text": ans,"confidence": 0.8,"tone": "neutral"})
+        if has_ev:
+            conv = ("Short answer: " + _answerize(text, ev_text)) if is_q else "Got it — added to memory."
+            candidates.append({"type": "conversational_factual","text": conv,"confidence": 0.7,"tone": "friendly"})
+        uh = "I don’t know that yet." if is_q else "Got it — I’ll remember that."
+        candidates.append({"type": "uncertain_helpful","text": uh,"confidence": 0.35,"tone": "neutral"})
+
+        for c in candidates:
+            if c["text"].strip().lower() == text.strip().lower():
+                c["text"] = "Answer: " + c["text"]
+
+        out = {"candidates": candidates, "weights_used": {"gen_rule":"s6_anti_echo_v1"}}
+        return {"ok": True, "op": op, "mid": mid, "payload": out}
+
+    if op == "FINALIZE":
+        ctx = payload if isinstance(payload, dict) else {}
+        text = _clean(str(ctx.get("original_query","")))
+        verdict = str((ctx.get("stage_8_validation") or {}).get("verdict","")).upper()
+        confidence = float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0) or 0.0)
+        cands = (ctx.get("stage_6_candidates") or {}).get("candidates") or []
+        prefs = (ctx.get("personality_snapshot") or {})
+        tone = prefs.get("tone","neutral")
+        verbosity = float(prefs.get("verbosity_target", 1.0) or 1.0)
+        has_ev = _best_evidence(ctx) is not None
+
+        pick = None
+        if verdict == "TRUE":
+            pick = next((c for c in cands if c.get("type")=="direct_factual"), None) or                    next((c for c in cands if c.get("type")=="conversational_factual"), None)
+        elif verdict in ("THEORY","UNKNOWN"):
+            pick = next((c for c in cands if c.get("type")=="uncertain_helpful"), None) or (cands[0] if cands else None)
+        elif verdict in ("FALSE","REJECT","CONTRADICTION"):
+            pick = {"type":"correction","text":"That doesn’t match what I know yet. Can you correct or add a reference?","confidence":0.9,"tone":"neutral"}
+        else:
+            pick = (cands[0] if cands else {"type":"uncertain_helpful","text":"I’m not sure yet.","confidence":0.3})
+
+        final_text = _tone_wrap(str(pick.get("text","")), tone)
+        if final_text.strip().lower() == text.strip().lower():
+            final_text = "Answer: " + final_text
+        final_text = _apply_verbosity(final_text, verbosity)
+        transparency = _transparency_tag(verdict, confidence, has_ev)
+
+        out = {"text": final_text,"tone": tone,"verbosity": verbosity,"transparency": transparency,"weights_used": {"final_rule":"s10_anti_echo_v1"}}
+        return {"ok": True, "op": op, "mid": mid, "payload": out}
+
+    if op == "HEALTH":
+        return {"ok": True, "op": op, "mid": mid, "payload": {"ts": int(time.time())}}
+
+    return {"ok": False, "op": op, "mid": mid, "error": {"code": "UNSUPPORTED_OP", "message": op}}

@@ -1,0 +1,22 @@
+{
+  "tone_counts": {
+    "neutral": 533,
+    "calm": 0,
+    "upbeat": 4,
+    "urgent": 0,
+    "supportive": 2,
+    "thoughtful": 87,
+    "friendly": 35,
+    "curious": 2,
+    "imaginative": 2
+  },
+  "priority_adjust": {
+    "neutral": -0.2,
+    "supportive": -0.02,
+    "thoughtful": -0.2,
+    "friendly": -0.2,
+    "upbeat": -0.04,
+    "curious": -0.02,
+    "imaginative": -0.02
+  }
+}
