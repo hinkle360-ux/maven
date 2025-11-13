@@ -16,17 +16,51 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Add runtime_memory to the Python path if not already present
-_runtime_path = Path(__file__).resolve().parents[4] / "runtime_memory"
-if str(_runtime_path) not in sys.path:
+# Locate runtime_memory directory - try multiple possible locations
+# The expected structure is:
+#   git-root/
+#     ├── maven2_fix/brains/personal/memory/goal_memory.py (this file)
+#     └── runtime_memory/personal/memory/goal_memory.py (actual implementation)
+_this_file = Path(__file__).resolve()
+_runtime_path = None
+
+# Try parents[4] first (standard git repo structure)
+_candidate = _this_file.parents[4] / "runtime_memory"
+if (_candidate / "personal" / "memory" / "goal_memory.py").exists():
+    _runtime_path = _candidate
+else:
+    # Try parents[3] in case maven2_fix was moved independently
+    _candidate = _this_file.parents[3] / "runtime_memory"
+    if (_candidate / "personal" / "memory" / "goal_memory.py").exists():
+        _runtime_path = _candidate
+    else:
+        # Search up the directory tree for runtime_memory
+        for i in range(5):
+            _candidate = _this_file.parents[i] / "runtime_memory"
+            if (_candidate / "personal" / "memory" / "goal_memory.py").exists():
+                _runtime_path = _candidate
+                break
+
+if _runtime_path and str(_runtime_path) not in sys.path:
     sys.path.insert(0, str(_runtime_path))
 
 try:
     # Import from runtime_memory with explicit path to avoid circular import
     import importlib.util
+
+    if not _runtime_path:
+        raise FileNotFoundError(
+            f"Could not locate runtime_memory directory. Searched from {_this_file}. "
+            f"Expected structure: git-root/maven2_fix/ and git-root/runtime_memory/ as siblings."
+        )
+
+    _goal_memory_path = _runtime_path / "personal" / "memory" / "goal_memory.py"
+    if not _goal_memory_path.exists():
+        raise FileNotFoundError(f"Goal memory implementation not found at {_goal_memory_path}")
+
     _spec = importlib.util.spec_from_file_location(
         "runtime_goal_memory",
-        _runtime_path / "personal" / "memory" / "goal_memory.py"
+        _goal_memory_path
     )
     if _spec and _spec.loader:
         _runtime_goal_memory = importlib.util.module_from_spec(_spec)
