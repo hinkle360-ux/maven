@@ -22,31 +22,41 @@ if str(_runtime_path) not in sys.path:
     sys.path.insert(0, str(_runtime_path))
 
 try:
-    from personal.memory.goal_memory import (
-        add_goal,
-        get_goals,
-        complete_goal,
-        get_goal,
-        get_dependency_chain,
-        summary,
-        children_of,
-        set_deadline,
-        update_progress,
+    # Import from runtime_memory with explicit path to avoid circular import
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "runtime_goal_memory",
+        _runtime_path / "personal" / "memory" / "goal_memory.py"
     )
+    if _spec and _spec.loader:
+        _runtime_goal_memory = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_runtime_goal_memory)
 
-    # Re-export all functions
-    __all__ = [
-        "add_goal",
-        "get_goals",
-        "complete_goal",
-        "get_goal",
-        "get_dependency_chain",
-        "summary",
-        "children_of",
-        "set_deadline",
-        "update_progress",
-    ]
-except ImportError as e:
+        # Re-export functions from runtime module
+        add_goal = _runtime_goal_memory.add_goal
+        get_goals = _runtime_goal_memory.get_goals
+        complete_goal = _runtime_goal_memory.complete_goal
+        get_goal = _runtime_goal_memory.get_goal
+        get_dependency_chain = _runtime_goal_memory.get_dependency_chain
+        summary = _runtime_goal_memory.summary
+        children_of = _runtime_goal_memory.children_of
+        set_deadline = _runtime_goal_memory.set_deadline
+        update_progress = _runtime_goal_memory.update_progress
+
+        __all__ = [
+            "add_goal",
+            "get_goals",
+            "complete_goal",
+            "get_goal",
+            "get_dependency_chain",
+            "summary",
+            "children_of",
+            "set_deadline",
+            "update_progress",
+        ]
+    else:
+        raise ImportError("Could not load spec for runtime goal_memory")
+except Exception as e:
     # If runtime implementation cannot be imported, provide stubs
     # to prevent cascading failures
     import warnings
