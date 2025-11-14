@@ -1120,6 +1120,52 @@ def _parse_intent(text: str) -> Dict[str, Any]:
     except Exception:
         # Ignore errors in extended greeting detection and continue
         pass
+    # Identity queries detection.  Users sometimes ask about the agent's
+    # identity without a trailing question mark.  Examples include
+    # "who are you", "what is your name" or "tell me about yourself".
+    # When such patterns are detected anywhere in the input, classify
+    # the intent as "self_description_request" with type QUESTION.
+    # This ensures that self‑definition queries are routed through the
+    # proper identity response handler in Stage 6 via _build_self_description().
+    # This check MUST occur before REQUEST_PATTERNS to prevent queries like
+    # "tell me in your own words who you are" from being intercepted by the
+    # generic "tell me" pattern.  See upgrade notes for details on self‑model
+    # improvements and pattern matching order.
+    try:
+        identity_patterns = [
+            "who are you",
+            "what is your name",
+            "what's your name",
+            "tell me about yourself",
+            "who you are",
+            "are you maven",
+            "tell me who you are",
+            "describe yourself",
+            "what are you really",
+            "tell me in your own words who you are",
+            "tell me in your own words what you are",
+            "describe yourself in your own words",
+            "in your own words who are you",
+            "in your own words what are you",
+            "what are you in your own words",
+            "what is your own description",
+            "give me your own description"
+        ]
+        for pat in identity_patterns:
+            if pat in lower:
+                return {
+                    "type": "QUESTION",
+                    "intent": "self_description_request",
+                    "storable": False,
+                    "confidence_penalty": 0.0,
+                    "is_question": True,
+                    "is_command": False,
+                    "is_request": False,
+                    "is_statement": False
+                }
+    except Exception:
+        # If detection fails, fall back to normal question detection
+        pass
     # Detect explicit knowledge requests via certain phrasal patterns (e.g. "tell me about ...", "explain ...").
     # These phrases may not contain a question mark and would otherwise default to a FACT.  If any
     # pattern from REQUEST_PATTERNS is present, classify the input as a REQUEST and also mark it as
@@ -1321,50 +1367,6 @@ def _parse_intent(text: str) -> Dict[str, Any]:
             "is_request": False,
             "is_statement": False
         }
-    # Identity queries detection.  Users sometimes ask about the agent's
-    # identity without a trailing question mark.  Examples include
-    # "who are you", "what is your name" or "tell me about yourself".
-    # When such patterns are detected anywhere in the input, classify
-    # the intent as "self_description_request" with type QUESTION.
-    # This ensures that self‑definition queries are routed through the
-    # proper identity response handler in Stage 6 via _build_self_description().
-    # See upgrade notes for details on self‑model improvements.
-    try:
-        identity_patterns = [
-            "who are you",
-            "what is your name",
-            "what's your name",
-            "tell me about yourself",
-            "who you are",
-            "are you maven",
-            "tell me who you are",
-            "describe yourself",
-            "what are you really",
-            "tell me in your own words who you are",
-            "tell me in your own words what you are",
-            "describe yourself in your own words",
-            "in your own words who are you",
-            "in your own words what are you",
-            "what are you in your own words",
-            "what is your own description",
-            "give me your own description"
-        ]
-        for pat in identity_patterns:
-            if pat in lower:
-                return {
-                    "type": "QUESTION",
-                    "intent": "self_description_request",
-                    "storable": False,
-                    "confidence_penalty": 0.0,
-                    "is_question": True,
-                    "is_command": False,
-                    "is_request": False,
-                    "is_statement": False
-                }
-    except Exception:
-        # If detection fails, fall back to normal question detection
-        pass
-
     # ------------------------------------------------------------------
     # Relational queries detection
     #
@@ -2604,7 +2606,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             # questions to ensure downstream stages treat them as such.
             "intent": (
                 intent_info.get("intent")
-                if intent_info.get("intent") in {"math_compute", "relationship_update", "relationship_query", "preference_query", "user_profile_summary"}
+                if intent_info.get("intent") in {"math_compute", "relationship_update", "relationship_query", "preference_query", "user_profile_summary", "self_description_request"}
                 else (
                     "greeting"
                     if is_social
