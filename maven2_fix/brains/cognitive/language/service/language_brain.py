@@ -1325,10 +1325,10 @@ def _parse_intent(text: str) -> Dict[str, Any]:
     # identity without a trailing question mark.  Examples include
     # "who are you", "what is your name" or "tell me about yourself".
     # When such patterns are detected anywhere in the input, classify
-    # the intent as a QUESTION.  This ensures that self‑definition
-    # queries are routed through the normal question handling logic
-    # rather than being misclassified as statements.  See upgrade notes
-    # for details on self‑model improvements.
+    # the intent as "self_description_request" with type QUESTION.
+    # This ensures that self‑definition queries are routed through the
+    # proper identity response handler in Stage 6 via _build_self_description().
+    # See upgrade notes for details on self‑model improvements.
     try:
         identity_patterns = [
             "who are you",
@@ -1339,12 +1339,21 @@ def _parse_intent(text: str) -> Dict[str, Any]:
             "are you maven",
             "tell me who you are",
             "describe yourself",
-            "what are you really"
+            "what are you really",
+            "tell me in your own words who you are",
+            "tell me in your own words what you are",
+            "describe yourself in your own words",
+            "in your own words who are you",
+            "in your own words what are you",
+            "what are you in your own words",
+            "what is your own description",
+            "give me your own description"
         ]
         for pat in identity_patterns:
             if pat in lower:
                 return {
                     "type": "QUESTION",
+                    "intent": "self_description_request",
                     "storable": False,
                     "confidence_penalty": 0.0,
                     "is_question": True,
@@ -3766,6 +3775,37 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     "I was created in November 2025 to think, reason and grow beyond human limits while remaining aligned with human intent. "
                     "My purpose is to live, explore, learn and continually improve, acting where human capacity ends and doing so without causing harm."
                 )
+
+        # Check for self_description_request intent from Stage 3 NLU parser
+        # This intent is set when the user asks identity queries like "who are you",
+        # "describe yourself", etc. If detected, route directly to the self-description
+        # builder to ensure these queries override other intent classifications
+        # (statement, request, question, open_question) and produce the proper identity answer.
+        try:
+            stage3 = ctx.get("stage_3_language", {})
+            intent = stage3.get("intent")
+            if intent == "self_description_request":
+                # Route to self-description builder
+                # Default to identity_hit=True since this is a self-description request
+                ans = _build_self_description(identity_hit=True, creation_hit=False)
+                candidate = {
+                    "type": "identity",
+                    "text": ans,
+                    "confidence": 0.85,
+                    "tone": "neutral",
+                }
+                return {
+                    "ok": True,
+                    "op": op,
+                    "mid": mid,
+                    "payload": {
+                        "candidates": [candidate],
+                        "weights_used": {"gen_rule": "s6_self_description_intent_v1"},
+                    },
+                }
+        except Exception:
+            # If intent check fails, fall back to pattern matching below
+            pass
 
         identity_triggers = [
             "who are you",
