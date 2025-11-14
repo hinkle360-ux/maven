@@ -38,6 +38,10 @@ user_mood.json
 # Archives (preserved outside git)
 archive/
 
+# Sandbox workspace (ephemeral patch testing - keep README only)
+sandbox_workspace/*
+!sandbox_workspace/README.md
+
 # IDE
 .vscode/
 .idea/
