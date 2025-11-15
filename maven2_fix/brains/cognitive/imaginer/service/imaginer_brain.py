@@ -129,6 +129,38 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 "hypotheses": out_hyps
             }
         }
+
+    # EXECUTE_STEP: Phase 8 - Execute a creative/imagination step
+    if op == "EXECUTE_STEP":
+        step = payload.get("step") or {}
+        step_id = payload.get("step_id", 0)
+        context = payload.get("context") or {}
+
+        # Extract step details
+        description = step.get("description", "")
+        step_input = step.get("input") or {}
+        task = step_input.get("task", description)
+
+        # Use HYPOTHESIZE to generate creative ideas
+        hyp_result = service_api({"op": "HYPOTHESIZE", "payload": {"prompt": task, "n": 3}})
+
+        if hyp_result.get("ok"):
+            hyp_payload = hyp_result.get("payload") or {}
+            hypotheses = hyp_payload.get("hypotheses", [])
+
+            output = {
+                "ideas": [h.get("content") for h in hypotheses],
+                "hypotheses": hypotheses,
+                "task": task
+            }
+
+            return {"ok": True, "payload": {
+                "output": output,
+                "patterns_used": ["creative:brainstorming"]
+            }}
+
+        return {"ok": False, "error": {"code": "HYPOTHESIZE_FAILED", "message": "Failed to generate ideas"}}
+
     return {"ok": False, "op": op, "error": "unknown operation"}
 
 # Ensure the imaginer brain exposes a `handle` entry point

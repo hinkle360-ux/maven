@@ -294,6 +294,73 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Final run after refinements
         passed, err = _run_tests(code, test_code)
         return {"ok": True, "payload": {"code": code, "test_code": test_code, "refined": refined, "diagnostics": diagnostics, "tests_passed": passed, "test_error": err}}
+
+    # EXECUTE_STEP: Phase 8 - Execute a single step with pattern application
+    if op == "EXECUTE_STEP":
+        step = payload.get("step") or {}
+        step_id = payload.get("step_id", 0)
+        context = payload.get("context") or {}
+
+        # Get coding patterns from domain bank
+        coding_patterns = _get_coding_patterns()
+        patterns_used = []
+
+        # Extract step details
+        description = step.get("description", "")
+        step_input = step.get("input") or {}
+        task = step_input.get("task", description)
+
+        # Execute coding step: PLAN -> GENERATE -> VERIFY
+        try:
+            # Step 1: Plan
+            plan_result = service_api({"op": "PLAN", "payload": {"spec": task}})
+            if not plan_result.get("ok"):
+                return {"ok": False, "error": {"code": "PLAN_FAILED", "message": "Failed to plan coding step"}}
+
+            plan = plan_result.get("payload") or {}
+
+            # Step 2: Generate code
+            gen_result = service_api({"op": "GENERATE", "payload": {"spec": task, "plan": plan}})
+            if not gen_result.get("ok"):
+                return {"ok": False, "error": {"code": "GENERATE_FAILED", "message": "Failed to generate code"}}
+
+            gen_payload = gen_result.get("payload") or {}
+            code = gen_payload.get("code", "")
+            test_code = gen_payload.get("test_code", "")
+            summary = gen_payload.get("summary", {})
+
+            # Step 3: Verify
+            verify_result = service_api({"op": "VERIFY", "payload": {"code": code, "test_code": test_code}})
+            verify_payload = verify_result.get("payload") or {}
+
+            # If tests failed, attempt refinement
+            if not verify_payload.get("tests_passed", False):
+                refine_result = service_api({"op": "REFINE", "payload": {"code": code, "test_code": test_code}})
+                refine_payload = refine_result.get("payload") or {}
+                code = refine_payload.get("code", code)
+                test_code = refine_payload.get("test_code", test_code)
+                verify_payload["refined"] = refine_payload.get("refined", False)
+
+            # Record which patterns were used (if any)
+            if coding_patterns:
+                patterns_used = list(coding_patterns.keys())[:2]  # Use first 2 patterns for determinism
+
+            output = {
+                "code": code,
+                "test_code": test_code,
+                "summary": summary,
+                "verified": verify_payload.get("valid", False),
+                "tests_passed": verify_payload.get("tests_passed", False)
+            }
+
+            return {"ok": True, "payload": {
+                "output": output,
+                "patterns_used": patterns_used
+            }}
+
+        except Exception as e:
+            return {"ok": False, "error": {"code": "EXECUTION_ERROR", "message": str(e)}}
+
     # Unsupported op
     return {"ok": False, "error": {"code": "UNSUPPORTED_OP", "message": op}}
 

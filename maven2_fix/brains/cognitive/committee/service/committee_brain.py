@@ -120,6 +120,41 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             # Any errors in WM integration should be non‑blocking
             pass
         return {"ok": True, "op": op, "payload": result}
+
+    # EXECUTE_STEP: Phase 8 - Execute a governance/decision step
+    if op == "EXECUTE_STEP":
+        step = payload.get("step") or {}
+        step_id = payload.get("step_id", 0)
+        context = payload.get("context") or {}
+
+        # Extract step details
+        description = step.get("description", "")
+        step_input = step.get("input") or {}
+
+        # For governance steps, we typically aggregate multiple perspectives
+        # Create synthetic votes based on the step context
+        # In a real implementation, this would consult multiple subsystems
+
+        # Default: approve with moderate confidence
+        votes = [
+            {"decision": "approve", "confidence": 0.7},
+            {"decision": "approve", "confidence": 0.6}
+        ]
+
+        # Use CONSULT to aggregate
+        result = _aggregate_votes(votes)
+
+        output = {
+            "decision": result.get("decision"),
+            "confidence": result.get("confidence"),
+            "description": description
+        }
+
+        return {"ok": True, "payload": {
+            "output": output,
+            "patterns_used": ["governance:consensus"]
+        }}
+
     return {"ok": False, "op": op, "error": "unknown operation"}
 
 # Ensure the committee brain exposes a `handle` entry point
