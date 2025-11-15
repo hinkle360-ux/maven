@@ -359,3 +359,277 @@ Potential enhancements (not yet implemented):
 - Tier promotion based on repeated access (HIGH use_count)
 - Inter-tier migration rules (SHORT → MID after validation)
 - Tier-specific compression strategies for older LONG records
+
+## Phase 5: Continuous Learning & Long-Term Adaptation
+
+### Overview
+
+Phase 5 transforms Maven from a reactive cognitive pipeline into a system that learns, adapts, and restructures its knowledge over time. This phase builds on the tiered memory system (Phase 4) to enable deterministic continuous learning without time-based logic or randomness.
+
+### Core Capabilities
+
+Maven now automatically:
+- Discovers patterns across memory records
+- Forms abstract concepts from patterns
+- Acquires reusable skills from repeated tasks
+- Consolidates user preferences
+- Self-improves through long-term reflection
+
+### 5A: Automatic Pattern Discovery
+
+**Purpose**: Extract deterministic patterns from memory records without statistics or ML.
+
+**Implementation**: `pattern_recognition_brain.py::extract_patterns()`
+
+**Pattern Types**:
+
+1. **Preference Clusters** (`preference_cluster`)
+   - Detects: Repeated user preferences
+   - Example: "I like green" + "green is my favorite" → preference cluster
+   - Threshold: ≥2 occurrences
+   - Storage: TIER_LONG with importance 0.6-0.9
+
+2. **Recurring Intents** (`recurring_intent`)
+   - Detects: Frequent query types (e.g., "how do I...?" questions)
+   - Threshold: ≥3 occurrences
+   - Usage: Optimizes planner for common query patterns
+
+3. **Domain Focus** (`domain_focus`)
+   - Detects: Topic co-occurrence in tags
+   - Example: Many "animals" tags → domain focus on animals
+   - Threshold: ≥5 occurrences
+
+4. **Relational Structures** (`relation_structure`)
+   - Detects: Repeated relationship types (friend, family, colleague)
+   - Threshold: ≥2 occurrences
+
+**Pattern Record Schema**:
+
+```json
+{
+  "pattern_type": "preference_cluster",
+  "subject": "green",
+  "occurrences": 3,
+  "consistency": 0.3,
+  "examples": ["I like green", "green is my favorite color"]
+}
+```
+
+**Integration**: DMN can trigger pattern extraction via `EXTRACT_PATTERNS` operation and use patterns to suggest new abstractions, detect missing knowledge, and propose new bank categories.
+
+### 5B: Semantic Abstraction (Concept Formation)
+
+**Purpose**: Convert stable patterns into reusable concepts stored in TIER_LONG.
+
+**Implementation**: `brains/cognitive/abstraction/service/abstraction_brain.py`
+
+**Operations**:
+
+- `CREATE_CONCEPT`: Form concept from pattern
+- `UPDATE_CONCEPT`: Modify existing concept
+- `QUERY_CONCEPT`: Retrieve concepts by filters
+
+**Concept Record Schema**:
+
+```json
+{
+  "concept_id": 1234,
+  "name": "preference_green",
+  "attributes": ["likes_green"],
+  "derived_from_pattern": {...},
+  "tier": "LONG",
+  "importance": 0.8
+}
+```
+
+**Concept Types**:
+
+- **Preference Concepts**: User likes/dislikes (importance: 0.8-1.0)
+- **Intent Patterns**: Recurring query structures (importance: 0.7-0.9)
+- **Domain Concepts**: Topic specializations (importance: 0.75-0.9)
+- **Relation Concepts**: Relationship patterns (importance: 0.7-0.9)
+
+**Retrieval Integration**: `UNIFIED_RETRIEVE` surfaces concepts alongside raw facts, enabling semantic reasoning.
+
+### 5C: Skill Acquisition
+
+**Purpose**: Learn reusable task execution strategies from repeated query patterns.
+
+**Implementation**: `runtime_memory/task_knowledge/skill_manager.py`
+
+**Skill Detection Criteria**:
+
+- Similar question type repeats ≥3 times
+- Answers follow consistent plan structure
+- Query types: WHY, HOW, EXPLAIN, COMPARE
+
+**Skill Record Schema**:
+
+```json
+{
+  "type": "SKILL",
+  "skill_id": 42,
+  "name": "explain_birds_flying",
+  "input_shape": "WHY question about flight",
+  "output_shape": "multi-step explanation",
+  "steps": ["retrieve facts", "compose physics summary"],
+  "tier": "MID",
+  "importance": 0.7,
+  "usage_count": 5
+}
+```
+
+**Operations**:
+
+- `DETECT_SKILLS`: Analyze query history for patterns
+- `CONSOLIDATE_SKILL`: Create skill from single execution
+- `MATCH_SKILL`: Find existing skill for new query
+
+**Benefits**:
+
+- Planner uses skills as pre-built plans
+- Reasoning skips redundant steps
+- Answers become faster and more consistent over time
+
+### 5D: Long-Term Preference Consolidation
+
+**Purpose**: Merge repeated preferences and detect conflicts.
+
+**Implementation**: `brains/cognitive/preference_consolidation.py`
+
+**Consolidation Rules**:
+
+If user expresses same preference multiple times:
+```
+"I like green"
+"green is my favorite color"
+"I prefer green objects"
+"my room is green"
+```
+
+Consolidate into canonical form:
+
+```json
+{
+  "type": "PREFERENCE",
+  "canonical": "user_likes_green",
+  "tier": "MID",
+  "importance": 1.0,
+  "evidence_count": 4,
+  "sources": [seq_id1, seq_id2, seq_id3, seq_id4],
+  "confidence": 0.9
+}
+```
+
+**Conflict Detection**:
+
+When contradictions exist:
+- "I like cats" vs "I don't like cats"
+- Store CONFLICT record
+- Activate reasoning brain when answering
+- Resolution strategy: Present both, ask user for clarification
+
+**Conflict Record Schema**:
+
+```json
+{
+  "type": "CONFLICT",
+  "subject": "cats",
+  "conflicting_preferences": [...],
+  "tier": "MID",
+  "importance": 0.9,
+  "resolution_strategy": "present_both_ask_user"
+}
+```
+
+**Never Overwrite**: All preferences are preserved; conflicts maintain plurality.
+
+### 5E: DMN Long-Term Self-Improvement Loop
+
+**Purpose**: Extend DMN (Phase 3) for long-term learning and tier management.
+
+**Operation**: `RUN_LONG_TERM_REFLECTION`
+
+**Deterministic Triggers** (no time-based logic):
+
+1. **Tier Overflow** (WM > 100 records)
+   - Action: Demote oldest WM records to SHORT
+
+2. **Tier Imbalance** (MID/SHORT ratio > 3.0)
+   - Action: Rebalance tiers (promote SHORT, demote MID)
+
+3. **Concept Drift** (|patterns - facts| > 20)
+   - Action: Create concepts from excess patterns or extract patterns from facts
+
+4. **Idle Turns** (≥10 turns with no activity)
+   - Action: Consolidate memories
+
+5. **Concept Growth** (LONG tier > 50 concepts)
+   - Action: Scale importance by 0.95 (gradual decay)
+
+6. **Preference Consolidation Ready** (≥5 preferences)
+   - Action: Run preference consolidation
+
+7. **Skill Detection Ready** (query history ≥10)
+   - Action: Detect and save skills
+
+**Output Structure**:
+
+```json
+{
+  "insights": [
+    {"type": "tier_overflow", "description": "WM tier has 150 records"},
+    {"type": "concept_drift", "description": "Pattern/fact imbalance: 30 vs 10"}
+  ],
+  "actions": [
+    {"kind": "demote_wm_to_short", "target_count": 50},
+    {"kind": "create_concepts_from_patterns", "pattern_count": 20}
+  ]
+}
+```
+
+**Integration**: DMN produces actionable memory management directives. Never modifies code—only memory.
+
+### Phase 5 Design Constraints
+
+**Strictly Enforced**:
+
+1. **No Time-Based Logic**: No `datetime`, `time.time()`, or TTL expiry
+2. **Deterministic Only**: No LLM calls in core learning logic
+3. **No Randomness**: All pattern detection uses counts and thresholds
+4. **No Rewrites**: Phase 5 integrates with existing architecture
+5. **No Stubs**: All functions implement real logic
+6. **Backward Compatible**: Existing records work unchanged
+
+### Phase 5 Testing
+
+**Test Suite**: `tests/test_phase5_continuous_learning.py`
+
+**Coverage**:
+
+- Pattern extraction for preferences, intents, domains, relations
+- Concept creation and querying
+- Skill detection, consolidation, and matching
+- Preference consolidation and conflict detection
+- DMN long-term reflection triggers
+- Determinism verification (no randomness, no time logic)
+
+### Key Invariants
+
+1. **Patterns → Concepts → Skills**: Knowledge abstraction ladder
+2. **Evidence-Based**: All consolidation requires ≥N occurrences (deterministic thresholds)
+3. **Conflict Preservation**: Never discard contradicting preferences
+4. **Tier-Aware**: All new records respect tier assignment rules
+5. **Action-Oriented**: DMN outputs concrete actions, not vague suggestions
+
+### Benefits
+
+Phase 5 enables Maven to:
+
+- **Learn from repetition**: Discovers patterns in user behavior
+- **Build abstractions**: Forms concepts that generalize knowledge
+- **Optimize execution**: Reuses skills for common tasks
+- **Manage complexity**: Consolidates preferences and balances tiers
+- **Self-improve**: Adjusts memory structure based on usage patterns
+
+This transforms Maven from a stateless assistant into a system that **grows, adapts, and improves over months and years** while maintaining determinism and safety.
