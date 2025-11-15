@@ -10,7 +10,7 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from brains.cognitive.self_model.service.self_model import service_api as self_model_api
+from brains.cognitive.self_model.service.self_model_brain import service_api as self_model_api
 from brains.cognitive.self_review.service.self_review_brain import service_api as self_review_api
 from brains.cognitive.self_dmn.service.self_dmn_brain import service_api as self_dmn_api
 from brains.cognitive.motivation.service.motivation_brain import service_api as motivation_api

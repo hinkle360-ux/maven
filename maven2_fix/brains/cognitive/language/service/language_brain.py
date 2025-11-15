@@ -3753,7 +3753,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 A string containing Maven's self-description from self_model
             """
             try:
-                from brains.cognitive.self_model.service.self_model import service_api as self_model_api
+                from brains.cognitive.self_model.service.self_model_brain import service_api as self_model_api
                 query = ""
                 if identity_hit and not creation_hit:
                     query = "who are you"
