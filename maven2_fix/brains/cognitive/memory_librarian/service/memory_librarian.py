@@ -3319,6 +3319,7 @@ def _unified_retrieve(query: str, k: int = 5, filters: Optional[dict] = None) ->
 # === Service API =============================================================
 
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
+    global _SEQ_ID_COUNTER
     from api.utils import generate_mid, success_response, error_response, write_report, CFG  # type: ignore
     from api.memory import update_last_record_success, ensure_dirs  # type: ignore
     op = (msg or {}).get("op", "").upper()
@@ -3347,7 +3348,6 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # Phase 5 Determinism: Use monotonic sequence ID for run tracking
         # instead of random seed. This ensures full determinism without
         # time-based or random logic.
-        global _SEQ_ID_COUNTER
         try:
             with _SEQ_ID_LOCK:
                 _SEQ_ID_COUNTER += 1
@@ -7275,7 +7275,6 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     }
 
             # Include global state
-            global _SEQ_ID_COUNTER
             health_summary = {
                 "tiers": summary_by_tier,
                 "total_records": total_records,
