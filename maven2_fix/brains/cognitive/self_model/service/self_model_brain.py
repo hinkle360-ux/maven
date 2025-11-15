@@ -120,22 +120,29 @@ class SelfModel:
             pass
         return {}
 
-    def query_self(self, query: str) -> Tuple[Optional[str], Optional[float]]:
+    def query_self(self, query: str) -> Dict[str, Any]:
         """Attempt to answer a self‑referential question.
 
         Inspect the provided query for common identity questions.  If a
-        match is found, return a tuple of (answer, confidence).  When
-        no appropriate self answer exists, return (None, None).
+        match is found, return a success dict with answer and confidence.
+        When no appropriate self answer exists, return an error dict.
 
         Args:
             query: Raw user query.
         Returns:
-            A tuple (answer_text, confidence) or (None, None).
+            A dict with ok, payload (text, confidence, self_origin) or error.
         """
         try:
             ql = (query or "").strip().lower()
         except Exception:
-            return None, None
+            return {
+                "ok": False,
+                "error": {
+                    "code": "SELF_MODEL_FAILURE",
+                    "message": "Self-model could not process the request."
+                },
+                "payload": {}
+            }
         facts = self._load_self_facts() or {}
         name = str(facts.get("name")) or "Maven"
         kind = str(facts.get("type")) or "synthetic cognition system"
@@ -174,7 +181,14 @@ class SelfModel:
                 if purpose:
                     parts.append(f"My purpose is {purpose}.")
                 answer = " ".join(parts)
-                return answer, 0.92
+                return {
+                    "ok": True,
+                    "payload": {
+                        "text": answer,
+                        "confidence": 0.92,
+                        "self_origin": True
+                    }
+                }
             # Age queries: "how old are you", "how old you", "your age"
             if re.search(r"\bhow\s+old\s+are\s+you\b", ql) or re.search(r"\bhow\s+old\s+you\b", ql) or re.search(r"\byour\s+age\b", ql):
                 has_age = bool(facts.get("has_age", False))
@@ -183,16 +197,44 @@ class SelfModel:
                     # uptime if available.  The actual uptime reporting is
                     # delegated to other modules, so only mention the
                     # possibility here.
-                    return ("I don't have a biological age; I'm software. I can share my uptime if you want.", 0.95)
+                    return {
+                        "ok": True,
+                        "payload": {
+                            "text": "I don't have a biological age; I'm software. I can share my uptime if you want.",
+                            "confidence": 0.95,
+                            "self_origin": True
+                        }
+                    }
                 # If an age is explicitly provided in the facts, use it.
                 explicit_age = facts.get("age")
                 if explicit_age:
-                    return (f"I'm {explicit_age}.", 0.90)
+                    return {
+                        "ok": True,
+                        "payload": {
+                            "text": f"I'm {explicit_age}.",
+                            "confidence": 0.90,
+                            "self_origin": True
+                        }
+                    }
                 # Fallback: no age information
-                return ("I don't have a biological age; I'm software.", 0.90)
+                return {
+                    "ok": True,
+                    "payload": {
+                        "text": "I don't have a biological age; I'm software.",
+                        "confidence": 0.90,
+                        "self_origin": True
+                    }
+                }
             # Location queries: "where are you", "where are we"
             if re.search(r"\bwhere\s+are\s+you\b", ql) or re.search(r"\bwhere\s+are\s+we\b", ql):
-                return ("I'm a digital system running on a server, so I don't occupy a physical location like a person does.", 0.88)
+                return {
+                    "ok": True,
+                    "payload": {
+                        "text": "I'm a digital system running on a server, so I don't occupy a physical location like a person does.",
+                        "confidence": 0.88,
+                        "self_origin": True
+                    }
+                }
 
             # Capabilities queries.  Users may ask what the assistant can do or is capable of.
             # Match phrases like "what can you do", "what do you do", "what are your capabilities",
@@ -206,7 +248,14 @@ class SelfModel:
                         "I can answer questions, perform reasoning, store and recall information, generate creative content, "
                         "write code snippets, summarise texts, and assist with planning and problem solving."
                     )
-                    return (cap_reply, 0.9)
+                    return {
+                        "ok": True,
+                        "payload": {
+                            "text": cap_reply,
+                            "confidence": 0.9,
+                            "self_origin": True
+                        }
+                    }
             except Exception:
                 pass
 
@@ -238,13 +287,27 @@ class SelfModel:
                         "and assist with tasks. If you have something specific you'd like "
                         "to know or do, feel free to ask!"
                     )
-                    return (pref_reply, 0.88)
+                    return {
+                        "ok": True,
+                        "payload": {
+                            "text": pref_reply,
+                            "confidence": 0.88,
+                            "self_origin": True
+                        }
+                    }
             except Exception:
                 pass
         except Exception:
             # On any regex error, fall back to no answer
             pass
-        return None, None
+        return {
+            "ok": False,
+            "error": {
+                "code": "NO_SELF_ANSWER",
+                "message": "Unsupported self query"
+            },
+            "payload": {}
+        }
 
 
 def describe_self(mode: str = "short") -> Dict[str, Any]:
@@ -405,23 +468,19 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
 
     if op == "QUERY_SELF":
         q = str(payload.get("query", ""))
-        ans, conf = model.query_self(q)
-        if ans is not None:
+        result = model.query_self(q)
+        if result.get("ok"):
             return {
                 "ok": True,
                 "op": op,
                 "mid": mid,
-                "payload": {
-                    "text": ans,
-                    "confidence": conf if conf is not None else 0.9,
-                    "self_origin": True,
-                },
+                "payload": result.get("payload", {}),
             }
         return {
             "ok": False,
             "op": op,
             "mid": mid,
-            "error": {"code": "NO_SELF_ANSWER", "message": "Unsupported self query"},
+            "error": result.get("error", {"code": "NO_SELF_ANSWER", "message": "Unsupported self query"}),
         }
 
     return {
