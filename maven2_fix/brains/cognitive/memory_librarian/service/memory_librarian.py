@@ -3273,22 +3273,24 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # "create", "make", "build", "plan", "schedule", "delegate",
         # "execute").  Commands beginning with other words (like
         # "show", "find", "search", "display", etc.) are executed on the
-        # spot and skipped by the planner.  When should_plan is already
-        # False this check is bypassed.
-        if should_plan:
+        # spot and skipped by the planner.
+        # IMPORTANT: This filter only applies to commands, NOT to questions
+        # or other query intents which should always go through the planner.
+        if should_plan and (is_cmd or is_req) and not is_question:
             try:
                 # Define the set of verbs that warrant persistent plans
                 command_verbs = {"create", "make", "build", "plan", "schedule", "delegate", "execute"}
+                # Define question/query words that should bypass this filter
+                query_words = {"why", "how", "what", "when", "where", "who", "compare", "explain", "describe", "tell"}
                 # Normalise the input to lower case and split into tokens
                 query_lc = (text or "").strip().lower()
                 tokens = query_lc.split()
                 # Only proceed with planning if the first token is one of the
-                # actionable verbs.  Otherwise, reset should_plan to False to
-                # skip the planner and use a fallback plan.  Guard against
-                # empty tokens.
+                # actionable verbs OR a question word.  Otherwise, reset should_plan
+                # to False to skip the planner and use a fallback plan.
                 if tokens:
                     first = tokens[0]
-                    if first not in command_verbs:
+                    if first not in command_verbs and first not in query_words:
                         should_plan = False
             except Exception:
                 # On error, leave should_plan unchanged
