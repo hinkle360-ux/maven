@@ -207,7 +207,48 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 ))
             except Exception:
                 continue
-        # Step‑4 enhancements: apply attention nudge and drive scaling
+        # Step‑3 & 4 enhancements: incorporate motivation weights into attention
+        motivation_weights: Dict[str, float] = {}
+        try:
+            from brains.cognitive.motivation.service.motivation_brain import service_api as motivation_api  # type: ignore
+            query = str(payload.get("query", ""))
+            context = payload.get("context", {})
+
+            resp = motivation_api({
+                "op": "EVALUATE_QUERY",
+                "payload": {"query": query, "context": context}
+            })
+            if resp.get("ok"):
+                motivation_weights = (resp.get("payload") or {}).get("weights", {})
+        except Exception:
+            pass
+
+        # Apply motivation-weighted priority adjustments
+        if motivation_weights:
+            for b in bids:
+                brain_name = str(b.brain_name).lower()
+                try:
+                    weight_boost = 0.0
+
+                    if brain_name == "language":
+                        weight_boost = motivation_weights.get("helpfulness", 0.8) * 0.1
+                    elif brain_name == "reasoning":
+                        weight_boost = (
+                            motivation_weights.get("truthfulness", 0.9) * 0.1 +
+                            motivation_weights.get("curiosity", 0.5) * 0.05
+                        )
+                    elif brain_name == "planner":
+                        weight_boost = motivation_weights.get("self_improvement", 0.5) * 0.1
+
+                    if weight_boost > 0:
+                        b.priority = min(1.0, float(b.priority) + weight_boost)
+                        b.evidence = b.evidence or {}
+                        b.evidence["motivation_boost"] = weight_boost
+                        b.evidence["motivation_weights"] = motivation_weights
+                except Exception:
+                    pass
+
+        # Apply attention nudge if enabled
         nudge_enabled = False
         try:
             from api.utils import CFG  # type: ignore
@@ -223,11 +264,12 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                         b.evidence["nudge"] = "wm_overlap"
                     except Exception:
                         pass
-        # Query the motivation brain for drive
+
+        # Query the motivation brain for overall drive to scale all priorities
         drive = 0.0
         try:
             from brains.cognitive.motivation.service.motivation_brain import service_api as motivation_api  # type: ignore
-            resp = motivation_api({"op": "SCORE_DRIVE", "payload": {"context": {}}})
+            resp = motivation_api({"op": "SCORE_DRIVE", "payload": {"context": context or {}}})
             drive = float((resp.get("payload") or {}).get("drive", 0.0))
         except Exception:
             drive = 0.0

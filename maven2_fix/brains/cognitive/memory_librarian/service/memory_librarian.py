@@ -6640,6 +6640,70 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
+        # Stage: Self-Review — Review the complete turn and take action
+        if op == "RUN_PIPELINE":
+            try:
+                from brains.cognitive.self_review.service.self_review_brain import service_api as self_review_api
+
+                review_resp = self_review_api({
+                    "op": "REVIEW_TURN",
+                    "payload": {
+                        "query": text,
+                        "plan": ctx.get("stage_2_planner", {}),
+                        "thoughts": ctx.get("stage_4_reasoning", {}).get("thoughts", []),
+                        "answer": str(ctx.get("final_answer", "")),
+                        "metadata": {
+                            "confidences": {
+                                "final": ctx.get("final_confidence", 0.8),
+                                "reasoning": (ctx.get("stage_8_validation", {}) or {}).get("confidence", 0.8)
+                            },
+                            "used_memories": (ctx.get("stage_2R_memory", {}) or {}).get("results", []),
+                            "intents": [(ctx.get("stage_3_language", {}) or {}).get("intent", "")]
+                        }
+                    }
+                })
+
+                if review_resp.get("ok"):
+                    review_payload = review_resp.get("payload", {})
+                    verdict = review_payload.get("verdict", "ok")
+                    recommended_action = review_payload.get("recommended_action", "accept")
+
+                    ctx["stage_self_review"] = review_payload
+
+                    if recommended_action == "ask_clarification":
+                        issues = review_payload.get("issues", [])
+                        issue_desc = issues[0].get("message", "low confidence") if issues else "low confidence"
+                        ctx["final_answer"] = f"I'm not confident in my answer due to {issue_desc}. Could you please provide more context or rephrase your question?"
+                        ctx["final_confidence"] = 0.3
+                    elif recommended_action == "revise":
+                        current_conf = ctx.get("final_confidence", 0.8)
+                        ctx["final_confidence"] = max(0.2, current_conf * 0.7)
+                        issues = review_payload.get("issues", [])
+                        if issues:
+                            issue_codes = [i.get("code", "") for i in issues]
+                            ctx.setdefault("review_notes", []).append({
+                                "action": "confidence_downgrade",
+                                "issues": issue_codes
+                            })
+
+                        try:
+                            from brains.cognitive.self_dmn.service.self_dmn_brain import service_api as self_dmn_api
+                            self_dmn_api({
+                                "op": "REFLECT_ON_ERROR",
+                                "payload": {
+                                    "error_context": {
+                                        "verdict": verdict,
+                                        "issues": issues,
+                                        "query": text
+                                    },
+                                    "turn_history": []
+                                }
+                            })
+                        except Exception:
+                            pass
+            except Exception as e:
+                ctx["stage_self_review_error"] = str(e)
+
         return success_response(op, mid, {"context": ctx})
 
     # Provide a backwards‑compatible HEALTH operation that reports the set of

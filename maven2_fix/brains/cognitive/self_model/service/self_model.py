@@ -247,17 +247,149 @@ class SelfModel:
         return None, None
 
 
+def describe_self(mode: str = "short") -> Dict[str, Any]:
+    """Generate a structured self-description.
+
+    Args:
+        mode: Either "short" or "detailed"
+
+    Returns:
+        Dictionary with identity, capabilities, and limitations
+    """
+    model = SelfModel()
+    facts = model._load_self_facts()
+
+    if mode == "detailed":
+        return {
+            "identity": {
+                "name": facts.get("name", "Maven"),
+                "creator": facts.get("creator", "Josh Hinkle (Hink)"),
+                "origin": facts.get("origin", "November 2025"),
+                "role": facts.get("role", "offline personal intelligence"),
+                "goals": facts.get("goals", [])
+            },
+            "capabilities": facts.get("capabilities", []),
+            "limitations": facts.get("limitations", [])
+        }
+    else:
+        return {
+            "identity": {
+                "name": facts.get("name", "Maven"),
+                "role": facts.get("role", "offline personal intelligence")
+            },
+            "capabilities": facts.get("capabilities", []),
+            "limitations": facts.get("limitations", [])
+        }
+
+def get_capabilities() -> List[str]:
+    """Retrieve list of Maven's capabilities.
+
+    Returns:
+        List of capability strings
+    """
+    model = SelfModel()
+    facts = model._load_self_facts()
+    return facts.get("capabilities", [])
+
+def get_limitations() -> List[str]:
+    """Retrieve list of Maven's limitations.
+
+    Returns:
+        List of limitation strings
+    """
+    model = SelfModel()
+    facts = model._load_self_facts()
+    return facts.get("limitations", [])
+
+def update_self_facts(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Update self facts in a controlled way.
+
+    Args:
+        updates: Dictionary of updates to apply
+
+    Returns:
+        Updated facts or error
+    """
+    try:
+        here = Path(__file__).resolve().parent
+        facts_path = here.parent / "memory" / "self_facts.json"
+
+        if facts_path.exists():
+            current_facts = json.loads(facts_path.read_text(encoding="utf-8"))
+        else:
+            current_facts = {}
+
+        for key, value in updates.items():
+            if key in ["capabilities", "limitations"]:
+                if isinstance(value, list):
+                    if "add" in updates.get("_mode", {}):
+                        current_facts.setdefault(key, []).extend(value)
+                    else:
+                        current_facts[key] = value
+            elif key not in ["name", "creator", "origin", "role"]:
+                current_facts[key] = value
+
+        facts_path.write_text(json.dumps(current_facts, indent=2), encoding="utf-8")
+        return {"ok": True, "updated_facts": current_facts}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Entry point for the self‑model brain.
 
-    Currently supports ``CAN_ANSWER`` to assess whether Maven can
-    answer a query.  Unsupported operations return an error.  The
-    payload should include a ``query`` string.
+    Supports operations for identity, capabilities, and limitations.
     """
     op = str((msg or {}).get("op", "")).upper()
     mid = (msg or {}).get("mid")
     payload = (msg or {}).get("payload") or {}
     model = SelfModel()
+
+    if op == "DESCRIBE_SELF":
+        mode = str(payload.get("mode", "short"))
+        description = describe_self(mode)
+        return {
+            "ok": True,
+            "op": op,
+            "mid": mid,
+            "payload": description,
+        }
+
+    if op == "GET_CAPABILITIES":
+        capabilities = get_capabilities()
+        return {
+            "ok": True,
+            "op": op,
+            "mid": mid,
+            "payload": {"capabilities": capabilities},
+        }
+
+    if op == "GET_LIMITATIONS":
+        limitations = get_limitations()
+        return {
+            "ok": True,
+            "op": op,
+            "mid": mid,
+            "payload": {"limitations": limitations},
+        }
+
+    if op == "UPDATE_SELF_FACTS":
+        updates = payload.get("updates", {})
+        result = update_self_facts(updates)
+        if result.get("ok"):
+            return {
+                "ok": True,
+                "op": op,
+                "mid": mid,
+                "payload": result,
+            }
+        else:
+            return {
+                "ok": False,
+                "op": op,
+                "mid": mid,
+                "error": {"code": "UPDATE_FAILED", "message": result.get("error", "Unknown error")},
+            }
+
     if op == "CAN_ANSWER":
         q = str(payload.get("query", ""))
         can_ans, beliefs = model.can_answer(q)
@@ -270,11 +402,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 "beliefs": beliefs,
             },
         }
-    # New operation: QUERY_SELF.  Attempt to answer self‑referential
-    # questions directly from self facts.  The response includes the
-    # answer text, a confidence score and a flag indicating that the
-    # answer originates from the self model.  When no answer is
-    # available, return an error.
+
     if op == "QUERY_SELF":
         q = str(payload.get("query", ""))
         ans, conf = model.query_self(q)
@@ -289,13 +417,13 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     "self_origin": True,
                 },
             }
-        # No direct answer available
         return {
             "ok": False,
             "op": op,
             "mid": mid,
             "error": {"code": "NO_SELF_ANSWER", "message": "Unsupported self query"},
         }
+
     return {
         "ok": False,
         "op": op,
