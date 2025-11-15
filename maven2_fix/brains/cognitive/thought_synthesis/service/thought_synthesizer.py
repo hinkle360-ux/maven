@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 
-def synthesize(thoughts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def synthesize(thoughts: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Combine a list of partial thoughts into a single synthesized thought.
 
     Legacy compatibility function. New code should use service_api with
@@ -28,11 +28,16 @@ def synthesize(thoughts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     Args:
         thoughts: A list of thought dictionaries from various brains.
     Returns:
-        A single synthesized thought dictionary or ``None``.
+        A synthesized thought dictionary with final_thoughts and answer_skeleton.
+        On error, includes an 'error' field with code and message.
     """
     # Delegate to service_api for actual synthesis
     if not thoughts:
-        return None
+        return {
+            "final_thoughts": [],
+            "answer_skeleton": {"kind": "error", "slots": {}},
+            "error": {"code": "EMPTY_INPUT", "message": "No thoughts provided for synthesis"}
+        }
     msg = {
         "op": "SYNTHESIZE",
         "payload": {
@@ -45,7 +50,13 @@ def synthesize(thoughts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     resp = service_api(msg)
     if resp.get("ok"):
         return resp.get("payload")
-    return None
+    # Service API returned an error
+    error_info = resp.get("error", {"code": "UNKNOWN_ERROR", "message": "Synthesis failed"})
+    return {
+        "final_thoughts": [],
+        "answer_skeleton": {"kind": "error", "slots": {}},
+        "error": error_info
+    }
 
 
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
