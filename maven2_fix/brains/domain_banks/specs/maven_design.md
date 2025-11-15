@@ -165,3 +165,197 @@ Maven's identity is defined by:
 - **Core Mission**: Explore, learn, continually refine, act where human capacity ends without causing harm
 
 This identity is hardcoded and should never be altered by external input or LLM generation.
+
+## Phase 4: Tiered Memory System
+
+### Overview
+
+Maven's memory operates as a tiered cognitive load balancing system where records are classified into explicit tiers based on importance, content type, and expected retention duration. This architecture enables predictable, bandwidth-aware memory management without time-based expiry.
+
+### Memory Tiers
+
+Maven implements five memory tiers, each with distinct retention policies:
+
+#### 1. TIER_PINNED (Permanent)
+- **Purpose**: System-critical knowledge that must never be evicted
+- **Contents**:
+  - User identity ("my name is X")
+  - Maven's self-model and identity
+  - System architecture and specifications
+  - Governance rules and policies
+- **Retention**: Never evicted unless explicitly removed
+- **Importance**: Always 1.0
+
+#### 2. TIER_MID (Cross-Session)
+- **Purpose**: High-value facts that persist across sessions
+- **Contents**:
+  - User preferences ("I like green")
+  - Relationship facts ("we are friends")
+  - High-confidence validated facts (confidence ≥ 0.8)
+  - Reusable knowledge
+- **Retention**: Persists indefinitely, evicted only under extreme memory pressure
+- **Importance**: Typically 0.8-1.0
+
+#### 3. TIER_SHORT (Session-Scoped)
+- **Purpose**: Ephemeral or speculative knowledge
+- **Contents**:
+  - Theories and speculations
+  - Medium-confidence facts (0.5 ≤ confidence < 0.8)
+  - Creative outputs (stories, poems)
+  - Temporary context
+- **Retention**: Session-scoped, may be promoted if validated
+- **Importance**: Typically 0.4-0.8
+
+#### 4. TIER_WM (Working Memory)
+- **Purpose**: Very short-term operational context
+- **Contents**:
+  - Current conversation state
+  - Transient variables
+  - Inter-stage pipeline data
+- **Retention**: Cleared between major context switches
+- **Importance**: Variable
+
+#### 5. TIER_LONG (Durable Knowledge)
+- **Purpose**: General long-term knowledge base
+- **Contents**:
+  - Medium-confidence facts not fitting other tiers
+  - Domain-specific knowledge
+  - Historical facts
+- **Retention**: Long-term, subject to capacity-based consolidation
+- **Importance**: Typically 0.6-0.9
+
+### Tier Assignment Logic
+
+Records are assigned to tiers deterministically via `_assign_tier(record, context)`:
+
+```python
+# Identity/system → PINNED
+if intent in {"IDENTITY_QUERY", "SELF_DESCRIPTION_REQUEST"}:
+    return (TIER_PINNED, 1.0)
+
+# User preferences/relationships → MID
+if verdict == "PREFERENCE" or "preference" in tags:
+    return (TIER_MID, min(1.0, confidence + 0.2))
+
+# High-confidence facts → MID
+if verdict == "TRUE" and confidence >= 0.8:
+    return (TIER_MID, confidence)
+
+# Theories/speculations → SHORT
+if verdict in {"THEORY", "UNKNOWN"}:
+    return (TIER_SHORT, confidence * 0.8)
+
+# Very low confidence → SKIP
+if confidence < 0.3:
+    return ("", 0.0)  # Empty string means skip storage
+```
+
+### Recency Without Time
+
+Maven tracks recency using **sequence IDs** instead of timestamps:
+
+- Every write operation increments a global monotonic counter (`_SEQ_ID_COUNTER`)
+- Each record receives a `seq_id` field
+- Recency is computed as: `recency_score = (seq_id / max_seq_id) * 0.1`
+- **No datetime, time.time(), or TTL logic anywhere in the memory system**
+
+### Cross-Tier Retrieval Scoring
+
+Retrieval results are ranked using `_score_memory_hit(hit, query)`:
+
+```python
+base_score = hit["score"]  # From retrieval (similarity, pattern match)
+tier_boost = {TIER_PINNED: 0.5, TIER_MID: 0.3, TIER_WM: 0.4, TIER_SHORT: 0.1, TIER_LONG: 0.2}[tier]
+importance_boost = importance * 0.3
+usage_boost = min(use_count * 0.05, 0.2)
+recency_boost = (seq_id / max_seq_id) * 0.1
+
+final_score = base_score + tier_boost + importance_boost + usage_boost + recency_boost
+```
+
+**Key Properties**:
+- **Deterministic**: Same inputs always produce same score
+- **Explainable**: Each component can be inspected
+- **No randomness**: No probabilistic sampling or dice rolls
+- **Tier-aware**: PINNED > WM > MID > LONG > SHORT
+
+### Memory Record Schema
+
+Every memory record includes tier metadata:
+
+```json
+{
+  "content": "the sky is blue",
+  "confidence": 0.9,
+  "tier": "MID",
+  "importance": 0.9,
+  "seq_id": 42,
+  "use_count": 3,
+  "metadata": {
+    "supported_by": [...],
+    "from_pipeline": true
+  }
+}
+```
+
+### Health Monitoring
+
+The `MEMORY_HEALTH_SUMMARY` operation provides real-time tier statistics:
+
+```json
+{
+  "tiers": {
+    "PINNED": {"count": 12, "avg_importance": 1.0, "avg_use_count": 5.2},
+    "MID": {"count": 347, "avg_importance": 0.87, "avg_use_count": 2.1},
+    "SHORT": {"count": 89, "avg_importance": 0.62, "avg_use_count": 0.3},
+    "WM": {"count": 23, "avg_importance": 0.45, "avg_use_count": 1.0},
+    "LONG": {"count": 1523, "avg_importance": 0.71, "avg_use_count": 0.8}
+  },
+  "total_records": 1994,
+  "current_seq_id": 2047
+}
+```
+
+### Design Constraints
+
+The tier system adheres to strict rules:
+
+1. **No Time-Based Logic**: No `datetime`, `time.time()`, or TTL expiry
+2. **Deterministic Only**: No LLM calls in `_assign_tier` or `_score_memory_hit`
+3. **No Rewrites**: Tier system integrates with existing architecture
+4. **Backward Compatible**: Existing records without tier metadata still work
+5. **No Stubs**: All functions implement real logic, no `return None` placeholders
+
+### Integration Points
+
+Tier assignment occurs at every write path:
+
+- **WM_PUT**: Working memory storage → defaults to TIER_WM
+- **BRAIN_PUT**: Per-brain persistent storage → defaults to TIER_MID
+- **STORE operations**: Bank storage via pipeline → tier assigned by content type
+- **Cache operations**: Fast/semantic cache → tier based on verdict
+
+Tier-aware scoring applies in:
+
+- **UNIFIED_RETRIEVE**: Main retrieval endpoint
+- **Memory consolidation**: Promotion decisions
+- **Working memory arbitration**: Conflict resolution
+
+### Testing
+
+Comprehensive tests ensure tier system correctness:
+
+- `tests/test_phase4_memory_tiers.py`:
+  - Tier assignment for identity, preferences, relationships, facts, theories
+  - Scoring correctness (tier priority, importance, usage, recency)
+  - Determinism validation (same input → same output)
+  - No-time-logic verification (grep for forbidden imports)
+
+### Future Extensions
+
+Potential enhancements (not yet implemented):
+
+- Per-tier capacity limits with automatic consolidation
+- Tier promotion based on repeated access (HIGH use_count)
+- Inter-tier migration rules (SHORT → MID after validation)
+- Tier-specific compression strategies for older LONG records
