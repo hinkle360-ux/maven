@@ -253,17 +253,156 @@ def _route_for(conf: float) -> str:
 
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main entrypoint for the reasoning brain.  Supports EVALUATE_FACT and HEALTH.
+    Main entrypoint for the reasoning brain.  Supports EVALUATE_FACT, GENERATE_THOUGHTS, and HEALTH.
 
     EVALUATE_FACT accepts a proposed fact and optional evidence.  It decides
     whether to accept the fact as TRUE, classify it as a THEORY, or mark it as
     UNKNOWN.  Questions are handled specially: the reasoner attempts to answer
     them using provided evidence and simple heuristics.  It also incorporates a
     learned bias signal from recent successes to gently adjust confidence.
+
+    GENERATE_THOUGHTS produces structured internal reasoning steps for Step 2
+    integration with the planner and thought synthesis systems.
     """
     op = (msg or {}).get("op", "").upper()
     mid = (msg or {}).get("mid")
     payload = (msg or {}).get("payload") or {}
+
+    # ------------------------------------------------------------------
+    # Step 2 operation: GENERATE_THOUGHTS
+    #
+    # Produces structured internal reasoning steps based on query, intent,
+    # entities, retrieved memories, and context.  Returns a list of thought
+    # steps with types: recall, inference, plan_hint, no_reasoning_path.
+    # This operation is used by the thought synthesis system to assemble
+    # coherent internal thinking traces.
+    if op == "GENERATE_THOUGHTS":
+        query_text = str(payload.get("query_text", ""))
+        intent = str(payload.get("intent", "")).upper()
+        entities = payload.get("entities") or []
+        retrieved_memories = payload.get("retrieved_memories") or []
+        context = payload.get("context") or {}
+
+        thought_steps: List[Dict[str, Any]] = []
+
+        # Simple factual questions: produce recall thoughts from memories
+        if intent in ("SIMPLE_FACT_QUERY", "QUESTION", "QUERY"):
+            # Check if we have high-confidence memories
+            for mem in retrieved_memories:
+                if not isinstance(mem, dict):
+                    continue
+                conf = float(mem.get("confidence", 0.0))
+                content = str(mem.get("content", ""))
+                mem_type = str(mem.get("type", ""))
+                if conf >= 0.7 and content:
+                    thought_steps.append({
+                        "type": "recall",
+                        "source": "memory",
+                        "content": content,
+                        "confidence": conf,
+                        "memory_type": mem_type,
+                    })
+
+            # If we have conflicting memories (different answers), note the conflict
+            if len(thought_steps) > 1:
+                contents = [t.get("content", "") for t in thought_steps]
+                if len(set(contents)) > 1:
+                    thought_steps.append({
+                        "type": "inference",
+                        "content": "Multiple conflicting memories found",
+                        "justification": f"Retrieved {len(contents)} different answers",
+                        "confidence": 0.5,
+                    })
+
+            # If no memories found, acknowledge uncertainty
+            if not thought_steps:
+                thought_steps.append({
+                    "type": "inference",
+                    "content": "No direct memory found for this question",
+                    "justification": "No high-confidence matches in memory banks",
+                    "confidence": 0.3,
+                })
+                thought_steps.append({
+                    "type": "plan_hint",
+                    "content": "May need to search external sources or decline to answer",
+                    "confidence": 0.6,
+                })
+
+        # Preference/identity/relational queries: convert facts into recall thoughts
+        elif intent in ("PREFERENCE_QUERY", "IDENTITY_QUERY", "RELATIONSHIP_QUERY"):
+            for mem in retrieved_memories:
+                if not isinstance(mem, dict):
+                    continue
+                content = str(mem.get("content", ""))
+                conf = float(mem.get("confidence", 0.0))
+                if content:
+                    # Classify the recall type based on content
+                    recall_type = "preference" if "like" in content.lower() or "prefer" in content.lower() else "fact"
+                    thought_steps.append({
+                        "type": "recall",
+                        "source": "memory",
+                        "content": content,
+                        "confidence": conf,
+                        "recall_type": recall_type,
+                    })
+
+            if not thought_steps:
+                thought_steps.append({
+                    "type": "inference",
+                    "content": "No stored preferences or identity facts found",
+                    "justification": "Query requires personal information not yet stored",
+                    "confidence": 0.4,
+                })
+
+        # Open questions / explanations ("why", "how", "compare")
+        elif intent in ("EXPLAIN", "WHY", "HOW", "COMPARE", "ANALYSIS"):
+            # Break into simpler points or comparisons
+            if retrieved_memories:
+                thought_steps.append({
+                    "type": "recall",
+                    "source": "memory",
+                    "content": f"Found {len(retrieved_memories)} relevant memories",
+                    "confidence": 0.8,
+                })
+                # Create inference step to synthesize explanation
+                thought_steps.append({
+                    "type": "inference",
+                    "content": "Need to synthesize explanation from multiple facts",
+                    "justification": f"Combining {len(retrieved_memories)} memory records",
+                    "confidence": 0.7,
+                })
+            else:
+                thought_steps.append({
+                    "type": "no_reasoning_path",
+                    "reason": "insufficient_knowledge",
+                    "content": "Cannot explain without relevant background knowledge",
+                })
+
+        # Unsupported or unknown intents
+        else:
+            if intent:
+                thought_steps.append({
+                    "type": "no_reasoning_path",
+                    "reason": "unsupported_intent",
+                    "content": f"Intent '{intent}' not supported for structured reasoning",
+                })
+            else:
+                thought_steps.append({
+                    "type": "no_reasoning_path",
+                    "reason": "no_intent",
+                    "content": "No intent provided; cannot generate reasoning steps",
+                })
+
+        return {
+            "ok": True,
+            "op": op,
+            "mid": mid,
+            "payload": {
+                "thought_steps": thought_steps,
+                "query_text": query_text,
+                "intent": intent,
+            }
+        }
 
     # ------------------------------------------------------------------
     # Custom operation: EXPLAIN_LAST

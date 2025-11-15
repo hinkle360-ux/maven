@@ -88,6 +88,10 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     # Generate a basic plan for user requests and track long‑term goals.
     if op == "PLAN":
         text = str(payload.get("text", ""))
+        intent = str(payload.get("intent", "")).upper()
+        context = payload.get("context") or {}
+        motivation = payload.get("motivation")
+
         # Affect modulation: score the input text to derive valence,
         # arousal and priority delta.  Defer import to runtime to avoid
         # circular dependencies.
@@ -100,14 +104,101 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             affect = aff_res.get("payload") or {}
         except Exception:
             affect = {}
-        # Optional delta adjustments for weights (unused in primitive planner)
-        # Compute intents and targets based on heuristics
+
+        # Step 2: Determine plan structure based on intent
+        plan_id = f"plan_{int(importlib.import_module('time').time() * 1000)}"
+        steps: list[Dict[str, Any]] = []
+        priority = 0.5
+        can_parallelize = False
+
+        # Simple Q&A (simple_fact_query, question)
+        if intent in ("SIMPLE_FACT_QUERY", "QUESTION", "QUERY"):
+            steps = [
+                {"id": "s1", "kind": "retrieve", "target": "personal_memory", "status": "pending"},
+                {"id": "s2", "kind": "reason", "status": "pending"},
+                {"id": "s3", "kind": "compose_answer", "status": "pending"},
+            ]
+            priority = 0.7
+
+        # Explain / Why / How
+        elif intent in ("EXPLAIN", "WHY", "HOW"):
+            steps = [
+                {"id": "s1", "kind": "retrieve", "target": "all_banks", "status": "pending"},
+                {"id": "s2", "kind": "reason", "target": "chain_facts", "status": "pending"},
+                {"id": "s3", "kind": "compose_explanation", "status": "pending"},
+            ]
+            priority = 0.8
+
+        # Compare ("compare A and B")
+        elif intent == "COMPARE":
+            # Extract comparison targets from text if possible
+            text_lower = text.lower()
+            targets_a = []
+            targets_b = []
+            if " and " in text_lower:
+                parts = text_lower.split(" and ", 1)
+                # Extract nouns/entities from each part
+                import re
+                targets_a = re.findall(r'\b[A-Za-z]+\b', parts[0])[-3:] if parts[0] else []
+                targets_b = re.findall(r'\b[A-Za-z]+\b', parts[1])[:3] if len(parts) > 1 else []
+
+            steps = [
+                {"id": "s1", "kind": "retrieve", "target": "subject_a", "subjects": targets_a, "status": "pending"},
+                {"id": "s2", "kind": "retrieve", "target": "subject_b", "subjects": targets_b, "status": "pending"},
+                {"id": "s3", "kind": "reason", "target": "highlight_differences", "status": "pending"},
+                {"id": "s4", "kind": "compose_comparison", "status": "pending"},
+            ]
+            priority = 0.85
+
+        # User command ("do X", "summarize", "analyze this")
+        elif intent in ("COMMAND", "REQUEST", "ANALYZE"):
+            steps = [
+                {"id": "s1", "kind": "interpret_command", "status": "pending"},
+                {"id": "s2", "kind": "retrieve", "target": "relevant_context", "status": "pending"},
+                {"id": "s3", "kind": "act", "target": "action_engine", "status": "pending"},
+                {"id": "s4", "kind": "compose_result", "status": "pending"},
+            ]
+            priority = 0.9
+            can_parallelize = False
+
+        # Preference/identity queries
+        elif intent in ("PREFERENCE_QUERY", "IDENTITY_QUERY", "RELATIONSHIP_QUERY"):
+            steps = [
+                {"id": "s1", "kind": "retrieve", "target": "personal_memory", "status": "pending"},
+                {"id": "s2", "kind": "reason", "status": "pending"},
+                {"id": "s3", "kind": "compose_answer", "status": "pending"},
+            ]
+            priority = 0.75
+
+        # Unknown or unsupported intent
+        else:
+            if intent:
+                steps = [
+                    {"id": "s1", "kind": "fail", "reason": "unsupported_intent", "intent": intent, "status": "pending"}
+                ]
+            else:
+                # No intent provided - create a generic plan
+                intents, targets = _guess_intents_targets(text)
+                steps = [
+                    {"id": "s1", "kind": "retrieve", "target": "general", "status": "pending"},
+                    {"id": "s2", "kind": "reason", "status": "pending"},
+                    {"id": "s3", "kind": "compose_response", "status": "pending"},
+                ]
+            priority = 0.5
+
+        # Add backward compatibility fields (intents/targets)
         intents, targets = _guess_intents_targets(text)
+
         plan: Dict[str, Any] = {
+            "plan_id": plan_id,
             "goal": f"Satisfy user request: {text}",
-            "intents": intents,
-            "targets": targets,
-            "notes": "Planner generated plan"
+            "steps": steps,
+            "priority": priority,
+            "can_parallelize": can_parallelize,
+            "intent": intent,
+            "intents": intents,  # Backward compatibility
+            "targets": targets,  # Backward compatibility
+            "notes": "Step 2 planner: real multi-step plan"
         }
         # Record affect metrics in the plan
         if affect:
@@ -166,56 +257,63 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             pass
 
         # Split the request into sub‑tasks and record each as a persistent goal.
-        try:
-            # First, detect simple conditional patterns of the form
-            # Detect conditional patterns and sequence instructions into sub‑goals.  We
-            # handle three forms:
-            #   1) "if X then Y" → second goal runs on success of first.
-            #   2) "if not X then Y" or "if X fails then Y" → second goal runs on
-            #      failure of first.
-            #   3) "unless X, Y" (or "unless X then Y") → equivalent to
-            #      "if not X then Y".
-            segments: list[str] = []
-            conditions: list[Optional[str]] = []
-            # Pattern for "unless" conditions
-            unless_match = re.search(r"\bunless\s+(.+?)\s*(?:,\s*|\s+then\s+)(.+)", text, flags=re.IGNORECASE)
-            # Pattern for generic "if X then Y"
-            cond_match = re.search(r"\bif\s+(.+?)\s+then\s+(.+)", text, flags=re.IGNORECASE)
-            if unless_match:
-                cond_part = unless_match.group(1).strip()
-                action_part = unless_match.group(2).strip()
-                if cond_part:
-                    segments.append(cond_part)
-                    conditions.append(None)
-                if action_part:
-                    segments.append(action_part)
-                    # For "unless", the action triggers on failure of the condition
-                    conditions.append("failure")
-            elif cond_match:
-                cond_part = cond_match.group(1).strip()
-                action_part = cond_match.group(2).strip()
-                trigger = "success"
-                # If the condition includes negation or mentions failure, set trigger to failure
-                if re.search(r"\bnot\b", cond_part, flags=re.IGNORECASE) or re.search(r"fail", cond_part, flags=re.IGNORECASE):
-                    trigger = "failure"
-                if cond_part:
-                    segments.append(cond_part)
-                    conditions.append(None)
-                if action_part:
-                    segments.append(action_part)
-                    conditions.append(trigger)
-            else:
-                # Split by sequencing conjunctions for simple lists of tasks
-                raw_segments = [s.strip() for s in re.split(
-                    r"\b(?:and|then|after|before|once\s+you\s+have|once\s+you\'ve|once)\b|,",
-                    text,
-                    flags=re.IGNORECASE,
-                ) if s and s.strip()]
-                segments = raw_segments
-                conditions = [None for _ in segments]
-            # Only record goals when more than one segment is detected
-            if len(segments) > 1:
-                plan["steps"] = segments
+        # STEP 2: Only do this if steps weren't already set by intent-based planning
+        if not steps or (len(steps) == 1 and steps[0].get("kind") == "fail"):
+            try:
+                # First, detect simple conditional patterns of the form
+                # Detect conditional patterns and sequence instructions into sub‑goals.  We
+                # handle three forms:
+                #   1) "if X then Y" → second goal runs on success of first.
+                #   2) "if not X then Y" or "if X fails then Y" → second goal runs on
+                #      failure of first.
+                #   3) "unless X, Y" (or "unless X then Y") → equivalent to
+                #      "if not X then Y".
+                segments: list[str] = []
+                conditions: list[Optional[str]] = []
+                # Pattern for "unless" conditions
+                unless_match = re.search(r"\bunless\s+(.+?)\s*(?:,\s*|\s+then\s+)(.+)", text, flags=re.IGNORECASE)
+                # Pattern for generic "if X then Y"
+                cond_match = re.search(r"\bif\s+(.+?)\s+then\s+(.+)", text, flags=re.IGNORECASE)
+                if unless_match:
+                    cond_part = unless_match.group(1).strip()
+                    action_part = unless_match.group(2).strip()
+                    if cond_part:
+                        segments.append(cond_part)
+                        conditions.append(None)
+                    if action_part:
+                        segments.append(action_part)
+                        # For "unless", the action triggers on failure of the condition
+                        conditions.append("failure")
+                elif cond_match:
+                    cond_part = cond_match.group(1).strip()
+                    action_part = cond_match.group(2).strip()
+                    trigger = "success"
+                    # If the condition includes negation or mentions failure, set trigger to failure
+                    if re.search(r"\bnot\b", cond_part, flags=re.IGNORECASE) or re.search(r"fail", cond_part, flags=re.IGNORECASE):
+                        trigger = "failure"
+                    if cond_part:
+                        segments.append(cond_part)
+                        conditions.append(None)
+                    if action_part:
+                        segments.append(action_part)
+                        conditions.append(trigger)
+                else:
+                    # Split by sequencing conjunctions for simple lists of tasks
+                    raw_segments = [s.strip() for s in re.split(
+                        r"\b(?:and|then|after|before|once\s+you\s+have|once\s+you\'ve|once)\b|,",
+                        text,
+                        flags=re.IGNORECASE,
+                    ) if s and s.strip()]
+                    segments = raw_segments
+                    conditions = [None for _ in segments]
+                # Only record goals when more than one segment is detected
+                # NOTE: This sets plan["steps"] to a list of strings for backward compatibility
+                # In Step 2, we prefer structured step dicts, so only use this fallback
+                # when no structured steps were created above
+                if len(segments) > 1:
+                    plan["steps"] = segments
+                    # Also update the "steps" variable for goal memory below
+                    steps = segments
                 try:
                     from brains.personal.memory import goal_memory  # type: ignore
                     prev_id: str | None = None
@@ -253,8 +351,8 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                             continue
                 except Exception:
                     pass
-        except Exception:
-            pass
+            except Exception:
+                pass
         return success_response(op, mid, plan)
     # Unsupported operations
     return error_response(op, mid, "UNSUPPORTED_OP", op)
