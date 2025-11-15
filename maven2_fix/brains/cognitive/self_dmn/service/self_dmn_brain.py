@@ -759,6 +759,136 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
 
         return success_response(op, mid, {"insights": insights, "actions": actions})
 
+    # RUN_LONG_TERM_REFLECTION: Phase 5 long-term self-improvement cycle
+    if op == "RUN_LONG_TERM_REFLECTION":
+        """
+        Long-term reflection triggered when:
+        - System idle ≥ N turns (no time-based logic — N = deterministic constant)
+        - Tier imbalance detected
+        - Concept drift detected (patterns vs facts)
+
+        Deterministic triggers only:
+        - counts
+        - seq_ids
+        - importance
+        - use_count
+        No wall-clock time.
+        """
+        tier_stats = payload.get("tier_stats", {})
+        pattern_count = payload.get("pattern_count", 0)
+        fact_count = payload.get("fact_count", 0)
+        idle_turns = payload.get("idle_turns", 0)
+
+        # Deterministic thresholds
+        TIER_WM_THRESHOLD = 100
+        TIER_IMBALANCE_RATIO = 3.0
+        IDLE_TURN_THRESHOLD = 10
+        CONCEPT_DRIFT_THRESHOLD = 20
+
+        insights: List[Dict[str, Any]] = []
+        actions: List[Dict[str, Any]] = []
+
+        # Check TIER_WM overflow
+        wm_count = tier_stats.get("WM", {}).get("count", 0)
+        if wm_count > TIER_WM_THRESHOLD:
+            insights.append({
+                "type": "tier_overflow",
+                "description": f"WM tier has {wm_count} records (threshold: {TIER_WM_THRESHOLD})"
+            })
+            actions.append({
+                "kind": "demote_wm_to_short",
+                "target_tier": "WM",
+                "target_count": wm_count - TIER_WM_THRESHOLD
+            })
+
+        # Check tier imbalance
+        mid_count = tier_stats.get("MID", {}).get("count", 0)
+        short_count = tier_stats.get("SHORT", {}).get("count", 0)
+        if short_count > 0 and mid_count / short_count > TIER_IMBALANCE_RATIO:
+            insights.append({
+                "type": "tier_imbalance",
+                "description": f"MID/SHORT ratio is {mid_count / short_count:.2f} (threshold: {TIER_IMBALANCE_RATIO})"
+            })
+            actions.append({
+                "kind": "rebalance_tiers",
+                "promote_from": "SHORT",
+                "demote_from": "MID"
+            })
+
+        # Check concept drift
+        if pattern_count > 0 and fact_count > 0:
+            drift_ratio = abs(pattern_count - fact_count)
+            if drift_ratio > CONCEPT_DRIFT_THRESHOLD:
+                insights.append({
+                    "type": "concept_drift",
+                    "description": f"Pattern/fact imbalance: {pattern_count} patterns vs {fact_count} facts"
+                })
+                if pattern_count > fact_count:
+                    actions.append({
+                        "kind": "create_concepts_from_patterns",
+                        "pattern_count": pattern_count - fact_count
+                    })
+                else:
+                    actions.append({
+                        "kind": "extract_patterns_from_facts",
+                        "fact_count": fact_count - pattern_count
+                    })
+
+        # Check idle turns
+        if idle_turns >= IDLE_TURN_THRESHOLD:
+            insights.append({
+                "type": "idle_detected",
+                "description": f"System idle for {idle_turns} turns (threshold: {IDLE_TURN_THRESHOLD})"
+            })
+            actions.append({
+                "kind": "consolidate_memories",
+                "priority": 0.7
+            })
+
+        # Concept importance scaling
+        concept_count = tier_stats.get("LONG", {}).get("count", 0)
+        if concept_count > 50:
+            insights.append({
+                "type": "concept_growth",
+                "description": f"LONG tier has {concept_count} concepts, consider importance scaling"
+            })
+            actions.append({
+                "kind": "scale_concept_importance",
+                "scaling_factor": 0.95  # Slight decay
+            })
+
+        # Preference consolidation trigger
+        preference_count = payload.get("preference_count", 0)
+        if preference_count >= 5:
+            insights.append({
+                "type": "preference_consolidation_ready",
+                "description": f"{preference_count} preferences ready for consolidation"
+            })
+            actions.append({
+                "kind": "consolidate_preferences",
+                "count": preference_count
+            })
+
+        # Skill detection trigger
+        query_history_len = payload.get("query_history_len", 0)
+        if query_history_len >= 10:
+            insights.append({
+                "type": "skill_detection_ready",
+                "description": f"Query history has {query_history_len} entries, ready for skill detection"
+            })
+            actions.append({
+                "kind": "detect_skills",
+                "query_count": query_history_len
+            })
+
+        try:
+            t = ensure_dirs(BRAIN_ROOT)
+            append_jsonl(t["stm"], {"op": "RUN_LONG_TERM_REFLECTION", "insights": insights, "actions": actions})
+        except Exception:
+            pass
+
+        return success_response(op, mid, {"insights": insights, "actions": actions, "action_count": len(actions)})
+
     # Unsupported operations
     return error_response(op, mid, "UNSUPPORTED_OP", op)
 

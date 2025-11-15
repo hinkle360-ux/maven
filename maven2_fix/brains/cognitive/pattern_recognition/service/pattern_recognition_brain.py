@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 import re
-from typing import Dict, Any
+from typing import Dict, Any, List
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -102,6 +102,120 @@ def _analyze(text: str) -> Dict[str, Any]:
         pass
     return out
 
+def extract_patterns(records: List[Dict]) -> List[Dict]:
+    """
+    Extract deterministic patterns from a list of memory records.
+
+    This is not clustering, not statistics, not ML.
+    This is deterministic rule-based pattern induction.
+
+    Extracts:
+    - repeated user preferences
+    - consistent relational structures
+    - topic co-occurrence
+    - repeated types of queries (intent frequencies)
+    - domain-specific repeated explanations
+
+    Args:
+        records: List of memory records with content, tags, intent, etc.
+
+    Returns:
+        List of structured pattern records (not free text).
+    """
+    if not records or not isinstance(records, list):
+        return []
+
+    patterns = []
+
+    # Track preferences (same pattern repeated)
+    preference_map: Dict[str, List[Dict]] = {}
+    intent_counter: Dict[str, int] = {}
+    topic_map: Dict[str, int] = {}
+    relation_types: Dict[str, int] = {}
+
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+
+        content = str(rec.get("content", "")).lower().strip()
+        tags = rec.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        tags_set = {str(t).lower() for t in tags}
+        intent = str(rec.get("intent", "")).upper()
+        verdict = str(rec.get("verdict", "")).upper()
+
+        # Pattern 1: Preference clustering
+        if verdict == "PREFERENCE" or "preference" in tags_set:
+            # Extract preference subject
+            if "like" in content:
+                parts = content.split("like")
+                if len(parts) > 1:
+                    subject = parts[1].strip().split()[0] if parts[1].strip().split() else ""
+                    if subject:
+                        if subject not in preference_map:
+                            preference_map[subject] = []
+                        preference_map[subject].append(rec)
+
+        # Pattern 2: Intent frequency tracking
+        if intent:
+            intent_counter[intent] = intent_counter.get(intent, 0) + 1
+
+        # Pattern 3: Topic co-occurrence
+        for tag in tags_set:
+            if tag and len(tag) > 2:
+                topic_map[tag] = topic_map.get(tag, 0) + 1
+
+        # Pattern 4: Relationship patterns
+        if "relationship" in tags_set or verdict == "RELATIONSHIP":
+            # Extract relation type (friend, family, etc.)
+            for word in ["friend", "family", "colleague", "mentor"]:
+                if word in content:
+                    relation_types[word] = relation_types.get(word, 0) + 1
+
+    # Generate pattern records for preferences (≥2 occurrences)
+    for subject, recs in preference_map.items():
+        if len(recs) >= 2:
+            patterns.append({
+                "pattern_type": "preference_cluster",
+                "subject": subject,
+                "occurrences": len(recs),
+                "consistency": min(1.0, len(recs) / 10.0),  # Deterministic scoring
+                "examples": [r.get("content", "") for r in recs[:3]]
+            })
+
+    # Generate pattern records for recurring intents (≥3 occurrences)
+    for intent, count in intent_counter.items():
+        if count >= 3:
+            patterns.append({
+                "pattern_type": "recurring_intent",
+                "intent": intent,
+                "frequency": count,
+                "consistency": min(1.0, count / 20.0)
+            })
+
+    # Generate pattern records for domain focus (≥5 occurrences)
+    for topic, count in topic_map.items():
+        if count >= 5:
+            patterns.append({
+                "pattern_type": "domain_focus",
+                "topic": topic,
+                "frequency": count,
+                "consistency": min(1.0, count / 30.0)
+            })
+
+    # Generate pattern records for relationship types
+    for rel_type, count in relation_types.items():
+        if count >= 2:
+            patterns.append({
+                "pattern_type": "relation_structure",
+                "relation_type": rel_type,
+                "frequency": count,
+                "consistency": min(1.0, count / 5.0)
+            })
+
+    return patterns
+
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     from api.utils import generate_mid, success_response, error_response  # type: ignore
     op = (msg or {}).get("op"," ").upper()
@@ -112,6 +226,10 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         return success_response(op, mid, {"status": "operational", "memory_health": _counts()})
     if op == "ANALYZE":
         return success_response(op, mid, _analyze(str(payload.get("text",""))))
+    if op == "EXTRACT_PATTERNS":
+        records = payload.get("records", [])
+        patterns = extract_patterns(records)
+        return success_response(op, mid, {"patterns": patterns, "count": len(patterns)})
     return error_response(op, mid, "UNSUPPORTED_OP", op)
 
 # Ensure the pattern_recognition brain exposes a `handle` entry point
