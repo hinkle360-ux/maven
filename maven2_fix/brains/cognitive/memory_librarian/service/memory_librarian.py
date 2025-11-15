@@ -3220,7 +3220,9 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         # "REQUEST") even if is_command/request booleans are absent.
         is_cmd = bool(lang_payload.get("is_command"))
         is_req = bool(lang_payload.get("is_request"))
+        is_question = bool(lang_payload.get("is_question"))
         st_type = str(lang_payload.get("type", "")).upper()
+        intent = str(lang_payload.get("intent", "")).upper()
         # Augment command detection: if is_command flag is not set but
         # the storable_type is COMMAND or the text begins with a CLI prefix,
         # treat this input as a command for planning and routing purposes.
@@ -3231,9 +3233,33 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     is_cmd = True
             except Exception:
                 pass
-        should_plan = False
-        if is_cmd or is_req or st_type in {"COMMAND", "REQUEST"}:
-            should_plan = True
+
+        # Determine if planner is required based on intent type
+        # Questions, explanations, comparisons, and commands all need planning
+        def _planner_required() -> bool:
+            # Command and request intents always require planning
+            if is_cmd or is_req or st_type in {"COMMAND", "REQUEST"}:
+                return True
+            # Question intents require planning for proper reasoning
+            if is_question or st_type == "QUESTION":
+                return True
+            # Specific intent types that require planning
+            planning_intents = {
+                "SIMPLE_FACT_QUERY",
+                "QUESTION",
+                "EXPLAIN",
+                "WHY",
+                "HOW",
+                "COMPARE",
+                "PROFILE_QUERY",
+                "PREFERENCE_QUERY",
+                "RELATIONSHIP_QUERY",
+            }
+            if intent in planning_intents:
+                return True
+            return False
+
+        should_plan = _planner_required()
         # ----------------------------------------------------------------------
         # Additional filter: do not invoke the planner for simple retrieval
         # requests.  Many user queries of the form "show me ..." or
@@ -3691,7 +3717,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             ctx["stage_2_planner"] = {
                 "goal": f"Satisfy user request: {text}",
                 "intents": ["retrieve_relevant_memories", "compose_response"],
-                "notes": "Planner skipped: non-command/request input"
+                "notes": "Planner not required for this intent"
             }
 
         # Stage 4 — Pattern recognition.  Run pattern analysis on the input
@@ -5822,10 +5848,11 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             ctx["stage_12b_identity_influence"] = {"error": str(e)}
 
         # Stage 13 — Self-DMN
-        # Config flag to enable/disable self-DMN (default: disabled)
-        self_dmn_enabled = False  # Set to True to enable
+        # Config flag to enable/disable self-DMN (default: enabled)
+        # Only skip if governance explicitly denies it
+        self_dmn_enabled = ctx.get("allow_self_dmn", True)
         if not self_dmn_enabled:
-            ctx["stage_13_self_dmn"] = {"skipped": True, "reason": "disabled"}
+            ctx["stage_13_self_dmn"] = {"skipped": True, "reason": "governance_disabled"}
         else:
             try:
                 sdmn = _brain_module("self_dmn")
