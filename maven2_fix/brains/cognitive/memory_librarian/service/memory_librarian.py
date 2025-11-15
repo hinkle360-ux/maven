@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 from typing import Dict, Any, List, Optional, Set
-import importlib.util, sys, json, re, os, random
+import importlib.util, sys, json, re, os
 import threading
 from pathlib import Path
 
@@ -91,6 +91,19 @@ TIER_SHORT = "SHORT"     # Per-session episodic memory
 TIER_MID = "MID"         # Cross-session high-value memory
 TIER_LONG = "LONG"       # Durable knowledge base
 TIER_PINNED = "PINNED"   # Never evicted unless explicitly removed
+
+# ---------------------------------------------------------------------------
+# Phase 5: Continuous Learning Record Types
+#
+# These record types represent higher-order cognitive structures that emerge
+# from pattern detection, concept formation, and skill acquisition. They are
+# persisted alongside facts and preferences to enable long-term adaptation.
+# ---------------------------------------------------------------------------
+
+# Phase 5 record type constants (used in verdict/tags fields)
+RECORD_TYPE_INFERRED_PATTERN = "INFERRED_PATTERN"  # Detected patterns from recurring inputs
+RECORD_TYPE_SKILL = "SKILL"                         # Learned query handling strategies
+RECORD_TYPE_CONCEPT = "CONCEPT"                     # Formed concepts from stable patterns
 
 # Sequence ID counter for recency tracking (replaces time-based logic)
 # This counter increments monotonically on every write operation to enable
@@ -352,6 +365,26 @@ def _assign_tier(record: Dict[str, Any], context: Dict[str, Any]) -> tuple[str, 
             "we are" in content.lower() or "you and i" in content.lower()):
             return (TIER_MID, min(1.0, confidence + 0.2))
 
+        # Phase 5: LONG tier - Concepts (stable knowledge structures)
+        # Concepts are formed from patterns and represent durable understanding
+        if verdict == RECORD_TYPE_CONCEPT or "concept" in tags_set:
+            return (TIER_LONG, min(1.0, confidence + 0.3))
+
+        # Phase 5: MID tier - Skills (learned query handling strategies)
+        # Skills represent recurring successful patterns that persist cross-session
+        if verdict == RECORD_TYPE_SKILL or "skill" in tags_set:
+            return (TIER_MID, min(1.0, confidence + 0.25))
+
+        # Phase 5: SHORT/MID tier - Inferred patterns (detected regularities)
+        # Patterns start in SHORT and promote to MID based on consistency
+        if verdict == RECORD_TYPE_INFERRED_PATTERN or "pattern" in tags_set:
+            # High-consistency patterns go to MID, others to SHORT
+            pattern_consistency = record.get("consistency", 0.0)
+            if pattern_consistency >= 0.3:  # 30% consistency threshold
+                return (TIER_MID, min(1.0, confidence + 0.2))
+            else:
+                return (TIER_SHORT, confidence * 0.9)
+
         # Rule 3: MID tier - High-confidence factual knowledge
         # Validated facts with high confidence are cross-session knowledge
         if verdict == "TRUE" and confidence >= 0.8:
@@ -473,8 +506,23 @@ def _score_memory_hit(hit: Dict[str, Any], query: Dict[str, Any]) -> float:
         max_seq_id = max(_SEQ_ID_COUNTER, 1)  # Avoid division by zero
         recency_boost = (seq_id / max_seq_id) * 0.1 if seq_id > 0 else 0.0
 
+        # Phase 5: Record type boost - concepts, skills, patterns get priority
+        verdict = str(hit.get("verdict", "")).upper()
+        tags = hit.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        tags_set = {str(t).lower() for t in tags}
+
+        record_type_boost = 0.0
+        if verdict == RECORD_TYPE_CONCEPT or "concept" in tags_set:
+            record_type_boost = 0.25  # Concepts highly valuable
+        elif verdict == RECORD_TYPE_SKILL or "skill" in tags_set:
+            record_type_boost = 0.20  # Skills very valuable
+        elif verdict == RECORD_TYPE_INFERRED_PATTERN or "pattern" in tags_set:
+            record_type_boost = 0.15  # Patterns moderately valuable
+
         # Combine all factors
-        final_score = base_score + tier_boost + importance_boost + usage_boost + recency_boost
+        final_score = base_score + tier_boost + importance_boost + usage_boost + recency_boost + record_type_boost
 
         return final_score
 
@@ -3296,16 +3344,15 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             return error_response(op, mid, "UNIFIED_RETRIEVE_FAILED", str(e))
 
     if op == "RUN_PIPELINE":
-        # Initialise deterministic behaviour by seeding the PRNG.  A
-        # new seed is generated for every pipeline run and recorded
-        # in the context and a golden trace file for reproducibility.
+        # Phase 5 Determinism: Use monotonic sequence ID for run tracking
+        # instead of random seed. This ensures full determinism without
+        # time-based or random logic.
+        global _SEQ_ID_COUNTER
         try:
-            import random, secrets
-            seed_value = secrets.randbits(64)
-            random.seed(seed_value)
-            # Record seed in context as soon as possible
-            # ctx will be created after reading session; assign later
-            _seed_record = (seed_value, random.randint(100000, 999999))
+            with _SEQ_ID_LOCK:
+                _SEQ_ID_COUNTER += 1
+                run_id = _SEQ_ID_COUNTER
+            _seed_record = (run_id, run_id)  # (run_id, trace_id) both use seq_id
         except Exception:
             _seed_record = None
 
@@ -3820,7 +3867,8 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
             try:
-                write_report("system", f"run_{random.randint(100000, 999999)}.json", json.dumps(ctx, indent=2))
+                run_id = ctx.get("run_seed", _SEQ_ID_COUNTER)
+                write_report("system", f"run_{run_id}.json", json.dumps(ctx, indent=2))
             except Exception:
                 pass
             # Before returning on a fast cache hit, perform a self‑evaluation.
@@ -3929,7 +3977,8 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception:
                     pass
                 try:
-                    write_report("system", f"run_{random.randint(100000, 999999)}.json", json.dumps(ctx, indent=2))
+                    run_id = ctx.get("run_seed", _SEQ_ID_COUNTER)
+                    write_report("system", f"run_{run_id}.json", json.dumps(ctx, indent=2))
                 except Exception:
                     pass
                 # Self‑evaluation for run metrics
@@ -5871,10 +5920,9 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception:
                     pass
                 # MEMORY CONSOLIDATION: Trigger STM→MTM→LTM consolidation periodically
-                # Run consolidation 10% of the time to avoid performance overhead
+                # Run consolidation every 10 operations (deterministic)
                 try:
-                    import random
-                    if random.random() < 0.1:  # 10% chance
+                    if _SEQ_ID_COUNTER % 10 == 0:  # Every 10th operation
                         consolidation_stats = _consolidate_memory_banks()
                         if consolidation_stats.get("facts_promoted", 0) > 0:
                             ctx.setdefault("stage_9_storage", {})["consolidation"] = consolidation_stats
@@ -6608,7 +6656,8 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         # Write system report with full context for auditing
-        write_report("system", f"run_{random.randint(100000, 999999)}.json", json.dumps(ctx, indent=2))
+        run_id = ctx.get("run_seed", _SEQ_ID_COUNTER)
+        write_report("system", f"run_{run_id}.json", json.dumps(ctx, indent=2))
 
         # ------------------------------------------------------------------
         # Stage 16 — Regression Harness (optional)
@@ -7127,7 +7176,7 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     except Exception:
                         pass
                     rotated.append({"brain": brain, "stm_count": stm_count, "rule":"memory_overflow"})
-        write_report("system", f"health_{random.randint(100000, 999999)}.json", json.dumps({"counts": counts, "rotations": rotated}, indent=2))
+        write_report("system", f"health_{_SEQ_ID_COUNTER}.json", json.dumps({"counts": counts, "rotations": rotated}, indent=2))
         return success_response(op, mid, {"rotations": rotated, "counts": counts})
 
     # ----------------------------------------------------------------------
@@ -7881,6 +7930,249 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 return success_response(op, mid, result)
         except Exception as e:
             return error_response(op, mid, "BRAIN_GET_FAILED", str(e))
+
+    # -------------------------------------------------------------------------
+    # Phase 5: Continuous Learning Operations
+    # -------------------------------------------------------------------------
+
+    if op == "EXTRACT_PATTERNS":
+        """
+        Detect recurring patterns from memory records (preferences, intents, etc.)
+        Returns: List of detected patterns with occurrence counts and consistency
+        """
+        try:
+            from collections import defaultdict
+            payload_data = payload or {}
+            min_occurrences = int(payload_data.get("min_occurrences", 2))
+
+            # Read all memory records across tiers to detect patterns
+            from api.memory import ensure_dirs  # type: ignore
+            tiers_root = Path(__file__).resolve().parents[1] / "memory"
+
+            patterns: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"occurrences": 0, "records": []})
+
+            # Scan all tier files for preference clusters and recurring intents
+            for tier_name in [TIER_SHORT, TIER_MID, TIER_LONG, TIER_PINNED]:
+                tier_file = tiers_root / f"{tier_name.lower()}.jsonl"
+                if not tier_file.exists():
+                    continue
+
+                with open(tier_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line.strip())
+                            verdict = str(rec.get("verdict", "")).upper()
+                            intent = str(rec.get("intent", "")).upper()
+                            content = str(rec.get("content", ""))
+
+                            # Detect preference clusters
+                            if verdict == "PREFERENCE" and content:
+                                # Extract subject from preference (e.g., "i like cats" -> "cats")
+                                subject = content.lower().replace("i like ", "").replace("i prefer ", "").strip()
+                                if len(subject) > 2:
+                                    pattern_key = f"preference_cluster:{subject}"
+                                    patterns[pattern_key]["occurrences"] += 1
+                                    patterns[pattern_key]["pattern_type"] = "preference_cluster"
+                                    patterns[pattern_key]["subject"] = subject
+                                    patterns[pattern_key]["records"].append(rec)
+
+                            # Detect recurring intents
+                            if intent and intent != "UNKNOWN":
+                                pattern_key = f"recurring_intent:{intent}"
+                                patterns[pattern_key]["occurrences"] += 1
+                                patterns[pattern_key]["pattern_type"] = "recurring_intent"
+                                patterns[pattern_key]["intent"] = intent
+                                patterns[pattern_key]["records"].append(rec)
+                        except Exception:
+                            continue
+
+            # Filter patterns by minimum occurrences and compute consistency
+            detected_patterns = []
+            total_records = sum(p["occurrences"] for p in patterns.values())
+            for pattern_key, pattern_data in patterns.items():
+                if pattern_data["occurrences"] >= min_occurrences:
+                    consistency = pattern_data["occurrences"] / max(total_records, 1)
+                    detected_patterns.append({
+                        "pattern_key": pattern_key,
+                        "pattern_type": pattern_data.get("pattern_type"),
+                        "subject": pattern_data.get("subject"),
+                        "intent": pattern_data.get("intent"),
+                        "occurrences": pattern_data["occurrences"],
+                        "consistency": round(consistency, 3)
+                    })
+
+            return success_response(op, mid, {"patterns": detected_patterns, "count": len(detected_patterns)})
+        except Exception as e:
+            return error_response(op, mid, "EXTRACT_PATTERNS_FAILED", str(e))
+
+    if op == "CREATE_CONCEPT":
+        """
+        Create a concept record from a stable pattern
+        Writes a CONCEPT record to TIER_LONG
+        """
+        try:
+            from api.memory import append_jsonl  # type: ignore
+            pattern = payload.get("pattern", {})
+
+            if not pattern:
+                return error_response(op, mid, "BAD_REQUEST", "pattern is required")
+
+            # Generate concept from pattern
+            pattern_type = pattern.get("pattern_type")
+            subject = pattern.get("subject")
+            occurrences = pattern.get("occurrences", 0)
+            consistency = pattern.get("consistency", 0.0)
+
+            # Build concept record
+            concept_name = f"concept_{pattern_type}_{subject}".replace(" ", "_")
+            concept_content = f"Learned concept: {subject} (type: {pattern_type}, evidence: {occurrences} occurrences)"
+
+            concept_record = {
+                "record_id": f"concept_{_next_seq_id()}",
+                "content": concept_content,
+                "verdict": RECORD_TYPE_CONCEPT,
+                "confidence": min(0.9, 0.6 + consistency),  # Higher consistency = higher confidence
+                "tier": TIER_LONG,
+                "importance": min(1.0, 0.8 + consistency * 0.2),
+                "tags": ["concept", pattern_type],
+                "seq_id": _next_seq_id(),
+                "use_count": 0,
+                "pattern_source": pattern.get("pattern_key"),
+                "evidence_count": occurrences
+            }
+
+            # Write to LONG tier
+            tiers_root = Path(__file__).resolve().parents[1] / "memory"
+            long_file = tiers_root / "long.jsonl"
+            long_file.parent.mkdir(parents=True, exist_ok=True)
+            append_jsonl(long_file, concept_record)
+
+            return success_response(op, mid, {"concept": concept_record, "tier": TIER_LONG})
+        except Exception as e:
+            return error_response(op, mid, "CREATE_CONCEPT_FAILED", str(e))
+
+    if op == "DETECT_SKILLS":
+        """
+        Detect skills from query history (recurring query patterns)
+        Returns: List of detected skills with usage counts
+        """
+        try:
+            query_history = payload.get("query_history", [])
+            min_usage = int(payload.get("min_usage", 3))
+
+            from collections import defaultdict
+            skills: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"usage_count": 0, "examples": []})
+
+            # Detect recurring query patterns
+            for query_record in query_history:
+                query = str(query_record.get("query", "")).lower()
+                intent = str(query_record.get("intent", "")).upper()
+                plan = query_record.get("plan", [])
+
+                # Detect "WHY" questions
+                if query.startswith("why ") and intent == "QUESTION":
+                    skill_key = "WHY_question_handler"
+                    skills[skill_key]["usage_count"] += 1
+                    skills[skill_key]["input_shape"] = "WHY question"
+                    skills[skill_key]["plan_template"] = plan
+                    skills[skill_key]["examples"].append(query)
+
+                # Detect "HOW" questions
+                elif query.startswith("how ") and intent == "QUESTION":
+                    skill_key = "HOW_question_handler"
+                    skills[skill_key]["usage_count"] += 1
+                    skills[skill_key]["input_shape"] = "HOW question"
+                    skills[skill_key]["plan_template"] = plan
+                    skills[skill_key]["examples"].append(query)
+
+                # Detect preference queries
+                elif "what do i like" in query or "my preferences" in query:
+                    skill_key = "preference_query_handler"
+                    skills[skill_key]["usage_count"] += 1
+                    skills[skill_key]["input_shape"] = "preference query"
+                    skills[skill_key]["plan_template"] = plan
+                    skills[skill_key]["examples"].append(query)
+
+            # Filter by minimum usage and create skill records
+            detected_skills = []
+            for skill_key, skill_data in skills.items():
+                if skill_data["usage_count"] >= min_usage:
+                    detected_skills.append({
+                        "skill_name": skill_key,
+                        "input_shape": skill_data.get("input_shape"),
+                        "usage_count": skill_data["usage_count"],
+                        "plan_template": skill_data.get("plan_template"),
+                        "examples": skill_data["examples"][:3]  # Limit examples
+                    })
+
+            return success_response(op, mid, {"skills": detected_skills, "count": len(detected_skills)})
+        except Exception as e:
+            return error_response(op, mid, "DETECT_SKILLS_FAILED", str(e))
+
+    if op == "CONSOLIDATE_PREFERENCES":
+        """
+        Consolidate repeated preferences into canonical forms
+        Merges duplicate preferences and detects conflicts
+        """
+        try:
+            from api.memory import append_jsonl  # type: ignore
+            from collections import defaultdict
+
+            # Read all preference records from MID tier
+            tiers_root = Path(__file__).resolve().parents[1] / "memory"
+            mid_file = tiers_root / "mid.jsonl"
+
+            preferences: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+            if mid_file.exists():
+                with open(mid_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            rec = json.loads(line.strip())
+                            if str(rec.get("verdict", "")).upper() == "PREFERENCE":
+                                content = str(rec.get("content", "")).lower()
+                                # Extract subject (e.g., "i like cats" -> "cats")
+                                subject = content.replace("i like ", "").replace("i prefer ", "").replace("i dislike ", "").strip()
+                                if len(subject) > 2:
+                                    preferences[subject].append(rec)
+                        except Exception:
+                            continue
+
+            # Consolidate preferences with multiple evidence
+            consolidated = []
+            conflicts = []
+
+            for subject, records in preferences.items():
+                if len(records) >= 2:  # At least 2 occurrences
+                    # Check for conflicts (likes vs dislikes)
+                    sentiments = [("likes" if "like" in str(r.get("content", "")).lower() else "dislikes") for r in records]
+                    if "likes" in sentiments and "dislikes" in sentiments:
+                        conflicts.append({
+                            "type": "CONFLICT",
+                            "subject": subject,
+                            "resolution_strategy": "present_both_ask_user",
+                            "evidence": [r.get("content") for r in records]
+                        })
+                    else:
+                        # No conflict - consolidate
+                        canonical = f"user_likes_{subject}".replace(" ", "_")
+                        consolidated.append({
+                            "canonical": canonical,
+                            "subject": subject,
+                            "tier": TIER_MID,
+                            "importance": 0.8,
+                            "evidence_count": len(records),
+                            "verdict": RECORD_TYPE_CONCEPT  # Consolidated preferences become concepts
+                        })
+
+            return success_response(op, mid, {
+                "consolidated": consolidated,
+                "conflicts": conflicts,
+                "consolidated_count": len(consolidated),
+                "conflict_count": len(conflicts)
+            })
+        except Exception as e:
+            return error_response(op, mid, "CONSOLIDATE_PREFERENCES_FAILED", str(e))
 
     # Fallback for unsupported operations
     return error_response(op, mid, "UNSUPPORTED_OP", op)

@@ -389,6 +389,168 @@
           "invariant": "PINNED > WM > MID > LONG > SHORT in retrieval ranking"
         }
       ]
+    },
+    "phase5_continuous_learning_suite": {
+      "description": "Phase 5: Continuous Learning & Long-Term Adaptation contracts",
+      "tests": [
+        {
+          "id": "pattern_extraction_preferences",
+          "setup": [
+            "i like green",
+            "green is my favorite color",
+            "i prefer green objects"
+          ],
+          "operation": "EXTRACT_PATTERNS",
+          "expected_patterns": [
+            {"pattern_type": "preference_cluster", "subject": "green"}
+          ],
+          "expected_min_occurrences": 2,
+          "description": "Should detect preference clusters from repeated statements"
+        },
+        {
+          "id": "pattern_extraction_recurring_intent",
+          "setup": [
+            "why is the sky blue?",
+            "why do birds fly?",
+            "why is water wet?"
+          ],
+          "operation": "EXTRACT_PATTERNS",
+          "expected_patterns": [
+            {"pattern_type": "recurring_intent", "intent": "QUESTION"}
+          ],
+          "expected_min_frequency": 3,
+          "description": "Should detect recurring intent patterns"
+        },
+        {
+          "id": "concept_formation",
+          "pattern": {
+            "pattern_type": "preference_cluster",
+            "subject": "cats",
+            "occurrences": 3,
+            "consistency": 0.3
+          },
+          "operation": "CREATE_CONCEPT",
+          "expected_concept": {
+            "name": "preference_cats",
+            "tier": "LONG",
+            "importance_min": 0.8,
+            "attributes": ["likes_cats"]
+          },
+          "description": "Should create concepts from stable patterns"
+        },
+        {
+          "id": "skill_detection",
+          "query_history": [
+            {"query": "why is the sky blue?", "intent": "QUESTION", "plan": ["retrieve", "explain"]},
+            {"query": "why do birds fly?", "intent": "QUESTION", "plan": ["retrieve", "explain"]},
+            {"query": "why is grass green?", "intent": "QUESTION", "plan": ["retrieve", "explain"]}
+          ],
+          "operation": "DETECT_SKILLS",
+          "expected_skills": [
+            {
+              "input_shape": "WHY question",
+              "tier": "MID",
+              "usage_count_min": 3
+            }
+          ],
+          "description": "Should detect skills from repeated query patterns"
+        },
+        {
+          "id": "preference_consolidation",
+          "preferences": [
+            {"content": "i like green", "verdict": "PREFERENCE", "seq_id": 1},
+            {"content": "green is my favorite", "verdict": "PREFERENCE", "seq_id": 2}
+          ],
+          "operation": "CONSOLIDATE_PREFERENCES",
+          "expected_consolidated": {
+            "canonical": "user_likes_green",
+            "tier": "MID",
+            "importance_min": 0.8,
+            "evidence_count_min": 2
+          },
+          "description": "Should consolidate repeated preferences"
+        },
+        {
+          "id": "preference_conflict_detection",
+          "preferences": [
+            {"canonical": "user_likes_cats", "subject": "cats", "sentiment": "likes"},
+            {"canonical": "user_dislikes_cats", "subject": "cats", "sentiment": "dislikes"}
+          ],
+          "operation": "DETECT_CONFLICTS",
+          "expected_conflicts": [
+            {
+              "type": "CONFLICT",
+              "subject": "cats",
+              "resolution_strategy": "present_both_ask_user"
+            }
+          ],
+          "description": "Should detect conflicting preferences"
+        },
+        {
+          "id": "dmn_tier_overflow_trigger",
+          "tier_stats": {
+            "WM": {"count": 150},
+            "MID": {"count": 100},
+            "SHORT": {"count": 50}
+          },
+          "operation": "RUN_LONG_TERM_REFLECTION",
+          "expected_insights": [
+            {"type": "tier_overflow"}
+          ],
+          "expected_actions": [
+            {"kind": "demote_wm_to_short"}
+          ],
+          "description": "Should trigger tier demotion when WM overflows"
+        },
+        {
+          "id": "dmn_tier_imbalance_trigger",
+          "tier_stats": {
+            "WM": {"count": 10},
+            "MID": {"count": 400},
+            "SHORT": {"count": 50}
+          },
+          "operation": "RUN_LONG_TERM_REFLECTION",
+          "expected_insights": [
+            {"type": "tier_imbalance"}
+          ],
+          "expected_actions": [
+            {"kind": "rebalance_tiers"}
+          ],
+          "description": "Should trigger rebalancing when MID/SHORT ratio exceeds threshold"
+        },
+        {
+          "id": "dmn_idle_cycle",
+          "tier_stats": {
+            "WM": {"count": 10},
+            "MID": {"count": 50},
+            "SHORT": {"count": 20}
+          },
+          "idle_turns": 15,
+          "operation": "RUN_LONG_TERM_REFLECTION",
+          "expected_insights": [
+            {"type": "idle_detected"}
+          ],
+          "expected_actions": [
+            {"kind": "consolidate_memories"}
+          ],
+          "description": "Should trigger memory consolidation when idle"
+        },
+        {
+          "id": "skill_matching",
+          "setup_skills": [
+            {
+              "name": "how_science",
+              "pattern_key": "SCIENCE_HOW",
+              "steps": ["retrieve", "explain"]
+            }
+          ],
+          "query": "how does photosynthesis work?",
+          "intent": "SCIENCE",
+          "operation": "MATCH_SKILL",
+          "expected_match": true,
+          "description": "Should match queries to existing skills"
+        }
+      ]
     }
   },
   "performance_expectations": {

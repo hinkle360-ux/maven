@@ -630,10 +630,12 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         reason = _check_upgrade_trigger(metrics)
         if reason:
             try:
-                import random
                 preview_dir = project_root / "reports" / "system"
                 preview_dir.mkdir(parents=True, exist_ok=True)
-                fname = preview_dir / f"upgrade_preview_{random.randint(100000, 999999)}.json"
+                # Use deterministic ID based on metrics hash instead of random
+                metrics_hash = hash(str(metrics.get("counts", {})))
+                preview_id = abs(metrics_hash) % 1000000  # Deterministic 6-digit ID
+                fname = preview_dir / f"upgrade_preview_{preview_id}.json"
                 with open(fname, "w", encoding="utf-8") as f:
                     json.dump({"metrics": metrics, "reason": reason}, f, indent=2)
             except Exception:
