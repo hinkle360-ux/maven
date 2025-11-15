@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json, glob
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 
 # Optional integration with personal brain and identity journal.  If available,
@@ -272,7 +272,11 @@ def _draft_reflections(metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     from api.memory import compute_success_average  # type: ignore
     from api.memory import append_jsonl  # type: ignore
+    from api.memory import ensure_dirs  # type: ignore
     from api.utils import success_response  # type: ignore
+    from api.utils import error_response  # type: ignore
+    from api.utils import generate_mid  # type: ignore
+    from api.utils import CFG  # type: ignore
     """
     Central entry point for Self‑DMN operations.
 
@@ -651,6 +655,109 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         return success_response(op, mid, {"drafts": drafts})
+
+    # RUN_IDLE_CYCLE: Background reflection when system is idle
+    if op == "RUN_IDLE_CYCLE":
+        system_history = payload.get("system_history", [])
+        recent_issues = payload.get("recent_issues", [])
+        motivation_state = payload.get("motivation_state", {})
+
+        insights: List[Dict[str, Any]] = []
+        actions: List[Dict[str, Any]] = []
+
+        if len(recent_issues) > 3:
+            insights.append({
+                "type": "weakness",
+                "description": f"Observed {len(recent_issues)} issues in recent runs"
+            })
+
+        error_count = sum(1 for issue in recent_issues if issue.get("severity") == "major")
+        if error_count > 0:
+            insights.append({
+                "type": "pattern",
+                "description": f"Pattern of {error_count} major errors detected"
+            })
+            actions.append({
+                "kind": "adjust_motivation",
+                "delta": {"truthfulness": 0.05, "self_improvement": 0.05}
+            })
+
+        if len(system_history) > 10:
+            recent_denies = sum(1 for h in system_history[-10:] if h.get("decision") == "DENY")
+            if recent_denies > 5:
+                insights.append({
+                    "type": "weakness",
+                    "description": f"High denial rate: {recent_denies}/10 recent queries denied"
+                })
+                actions.append({
+                    "kind": "schedule_learning_task",
+                    "task": {"type": "analyze_denial_patterns", "priority": 0.8}
+                })
+
+        try:
+            t = ensure_dirs(BRAIN_ROOT)
+            append_jsonl(t["stm"], {"op": "RUN_IDLE_CYCLE", "insights": insights, "actions": actions})
+        except Exception:
+            pass
+
+        return success_response(op, mid, {"insights": insights, "actions": actions})
+
+    # REFLECT_ON_ERROR: Analyze a specific error and suggest adjustments
+    if op == "REFLECT_ON_ERROR":
+        error_context = payload.get("error_context", {})
+        turn_history = payload.get("turn_history", [])
+
+        insights: List[Dict[str, Any]] = []
+        actions: List[Dict[str, Any]] = []
+
+        error_type = error_context.get("error_type", "unknown")
+        verdict = error_context.get("verdict", "")
+
+        if verdict == "major_issue":
+            insights.append({
+                "type": "weakness",
+                "description": f"Major issue detected: {error_type}"
+            })
+
+            issues = error_context.get("issues", [])
+            low_conf_issues = [i for i in issues if i.get("code") == "LOW_CONFIDENCE"]
+            incomplete_issues = [i for i in issues if i.get("code") == "INCOMPLETE"]
+
+            if low_conf_issues:
+                actions.append({
+                    "kind": "adjust_motivation",
+                    "delta": {"truthfulness": 0.1, "curiosity": -0.05}
+                })
+
+            if incomplete_issues:
+                actions.append({
+                    "kind": "schedule_learning_task",
+                    "task": {
+                        "type": "improve_completeness",
+                        "priority": 0.9,
+                        "target": error_context.get("query", "")
+                    }
+                })
+
+            if len(turn_history) > 5:
+                recent_errors = sum(1 for t in turn_history[-5:] if t.get("had_error", False))
+                if recent_errors >= 3:
+                    insights.append({
+                        "type": "pattern",
+                        "description": f"Recurring error pattern: {recent_errors}/5 recent turns had errors"
+                    })
+                    actions.append({
+                        "kind": "adjust_motivation",
+                        "delta": {"self_improvement": 0.15}
+                    })
+
+        try:
+            t = ensure_dirs(BRAIN_ROOT)
+            append_jsonl(t["stm"], {"op": "REFLECT_ON_ERROR", "insights": insights, "actions": actions})
+        except Exception:
+            pass
+
+        return success_response(op, mid, {"insights": insights, "actions": actions})
 
     # Unsupported operations
     return error_response(op, mid, "UNSUPPORTED_OP", op)

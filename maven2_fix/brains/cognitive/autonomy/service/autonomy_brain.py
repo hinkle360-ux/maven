@@ -389,11 +389,10 @@ def _complete_goals(max_goals: int = 1, priority_strategy: str = "priority") -> 
 
 def tick(ctx: dict) -> dict:
     """
-    Minimal autonomous tick.
+    Autonomous tick with self-DMN integration.
 
+    Calls RUN_IDLE_CYCLE from self_dmn and processes its actions.
     Must NEVER raise exceptions.
-    Returns a structured dict describing what autonomy decided to do.
-    For now, this is a safe stub that can be expanded later.
 
     Args:
         ctx: Pipeline context dictionary.
@@ -402,15 +401,72 @@ def tick(ctx: dict) -> dict:
         A dictionary with action, reason, and confidence fields.
     """
     try:
-        # Example: inspect recent context and decide to do nothing
-        # This can be expanded later to perform real autonomous decision-making
+        from brains.cognitive.self_dmn.service.self_dmn_brain import service_api as self_dmn_api
+        from brains.cognitive.motivation.service.motivation_brain import service_api as motivation_api
+
+        system_history = []
+        recent_issues = []
+
+        try:
+            if ctx.get("stage_self_review"):
+                verdict = (ctx.get("stage_self_review") or {}).get("verdict", "ok")
+                if verdict != "ok":
+                    recent_issues.append({
+                        "severity": "major" if verdict == "major_issue" else "minor",
+                        "issues": (ctx.get("stage_self_review") or {}).get("issues", [])
+                    })
+        except Exception:
+            pass
+
+        try:
+            motivation_state_resp = motivation_api({"op": "GET_STATE"})
+            motivation_state = {}
+            if motivation_state_resp.get("ok"):
+                motivation_state = motivation_state_resp.get("payload", {})
+        except Exception:
+            motivation_state = {}
+
+        dmn_resp = self_dmn_api({
+            "op": "RUN_IDLE_CYCLE",
+            "payload": {
+                "system_history": system_history,
+                "recent_issues": recent_issues,
+                "motivation_state": motivation_state
+            }
+        })
+
+        if dmn_resp.get("ok"):
+            dmn_payload = dmn_resp.get("payload", {})
+            actions = dmn_payload.get("actions", [])
+
+            for action in actions:
+                try:
+                    kind = action.get("kind")
+                    if kind == "adjust_motivation":
+                        delta = action.get("delta", {})
+                        motivation_api({
+                            "op": "ADJUST_STATE",
+                            "payload": {"deltas": delta}
+                        })
+                    elif kind == "schedule_learning_task":
+                        pass
+                except Exception:
+                    continue
+
+            if actions:
+                return {
+                    "action": "dmn_actions_processed",
+                    "reason": f"processed {len(actions)} self-dmn actions",
+                    "confidence": 0.8,
+                    "insights": dmn_payload.get("insights", [])
+                }
+
         return {
             "action": "noop",
-            "reason": "autonomy_stub",
-            "confidence": 0.0,
+            "reason": "no_dmn_actions",
+            "confidence": 0.5,
         }
     except Exception:
-        # Even in the unlikely event of an error, return a safe default
         return {
             "action": "noop",
             "reason": "tick_exception_caught",

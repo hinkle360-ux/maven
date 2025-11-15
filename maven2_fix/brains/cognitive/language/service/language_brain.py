@@ -3740,20 +3740,41 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
 
         def _build_self_description(identity_hit: bool, creation_hit: bool) -> str:
             """
-            Build a self-description response for Maven identity queries.
+            Build a self-description response for Maven identity queries using self_model brain.
 
-            This shared function generates consistent identity responses for
-            queries like "who are you", "tell me who you are", "describe yourself",
-            and "why were you created". It ensures all identity-related intents
-            receive the same high-quality response.
+            This function now delegates to the self_model brain's QUERY_SELF operation,
+            making the self_model the single source of truth for identity information.
 
             Args:
                 identity_hit: True if query asks about identity ("who are you")
                 creation_hit: True if query asks about purpose/creation
 
             Returns:
-                A string containing Maven's self-description
+                A string containing Maven's self-description from self_model
             """
+            try:
+                from brains.cognitive.self_model.service.self_model import service_api as self_model_api
+                query = ""
+                if identity_hit and not creation_hit:
+                    query = "who are you"
+                elif creation_hit and not identity_hit:
+                    query = "why were you created"
+                else:
+                    query = "who are you and why were you created"
+
+                resp = self_model_api({
+                    "op": "QUERY_SELF",
+                    "payload": {"query": query}
+                })
+
+                if resp.get("ok"):
+                    text = (resp.get("payload") or {}).get("text", "")
+                    if text:
+                        return text
+            except Exception:
+                pass
+
+            # Fallback if self_model fails
             if identity_hit and not creation_hit:
                 return (
                     "I'm Maven — a living system and intelligence conceived by my founder Josh Hinkle (Hink) "
@@ -3771,7 +3792,6 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     "My purpose is to live, explore the unknown and improve without harming others."
                 )
             else:
-                # When both identity and creation triggers appear, blend the responses.
                 return (
                     "I'm Maven — conceived by Josh Hinkle (Hink) and implemented by GPT‑5, with Claude as archivist. "
                     "I was created in November 2025 to think, reason and grow beyond human limits while remaining aligned with human intent. "
