@@ -276,7 +276,9 @@
     "role": "specialist",
     "status": "partial",
     "ops": [
-      "ARBITRATE"
+      "ARBITRATE",
+      "DOMAIN_BANK_SEED_VALIDATE",
+      "DOMAIN_BANK_SEED_APPLY"
     ]
   },
   "personal_brain": {

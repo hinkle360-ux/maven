@@ -701,6 +701,31 @@
         "decision": "dict"
       },
       "deterministic": true
+    },
+    "DOMAIN_BANK_SEED_VALIDATE": {
+      "input": {},
+      "output": {
+        "ok": "bool",
+        "mode": "str",
+        "total_entries": "int",
+        "banks": "dict",
+        "errors": "list",
+        "warnings": "list"
+      },
+      "deterministic": true
+    },
+    "DOMAIN_BANK_SEED_APPLY": {
+      "input": {},
+      "output": {
+        "ok": "bool",
+        "mode": "str",
+        "total_entries": "int",
+        "banks_seeded": "int",
+        "banks": "dict",
+        "errors": "list",
+        "warnings": "list"
+      },
+      "deterministic": true
     }
   },
   "abstraction_brain": {

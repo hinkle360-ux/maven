@@ -1,21 +1,57 @@
 from __future__ import annotations
 from typing import Dict, Any, List
 from api.utils import generate_mid, success_response, error_response
+import sys
+from pathlib import Path
+
+# Import seeding engine for admin operations
+SEEDS_DIR = Path(__file__).parent.parent.parent.parent / "domain_banks" / "specs" / "data" / "seeds"
+RUNTIME_DIR = Path("/home/user/maven/runtime_memory/domain_banks")
+
+# Add seeds directory to path for imports
+if str(SEEDS_DIR) not in sys.path:
+    sys.path.insert(0, str(SEEDS_DIR))
+
+
+def _run_domain_bank_seeding(validate_only: bool) -> Dict[str, Any]:
+    """
+    Run domain bank seeding operation.
+
+    Args:
+        validate_only: If True, validate but don't apply
+
+    Returns:
+        Seeding report
+    """
+    try:
+        from seeding_engine import run_seeding
+        from seed_validator import ValidationError
+
+        report = run_seeding(
+            str(SEEDS_DIR),
+            str(RUNTIME_DIR),
+            validate_only=validate_only
+        )
+        return {"ok": True, "report": report}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Simple arbitration service for coordinating outputs from multiple brains.
+    Council brain service for arbitration and admin operations.
 
-    The council brain accepts an ``ARBITRATE`` operation with a payload
-    containing a list of candidate responses.  Each candidate should be a
-    dictionary with at least a ``confidence`` field.  The council selects
-    the candidate with the highest confidence and returns it as the decision.
+    Operations:
+    - ARBITRATE: Coordinate outputs from multiple brains
+    - DOMAIN_BANK_SEED_VALIDATE: Validate domain bank seeds without applying
+    - DOMAIN_BANK_SEED_APPLY: Validate and apply domain bank seeds
+
     Unsupported operations return an error.
     """
     op = (msg or {}).get("op", "").upper()
     mid = msg.get("mid") or generate_mid()
     payload = msg.get("payload") or {}
+
     if op == "ARBITRATE":
         cands: List[Dict[str, Any]] = payload.get("candidates") or []
         if not isinstance(cands, list) or not cands:
@@ -31,6 +67,21 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 best_conf = conf
                 best = cand
         return success_response(op, mid, {"decision": best})
+
+    elif op == "DOMAIN_BANK_SEED_VALIDATE":
+        result = _run_domain_bank_seeding(validate_only=True)
+        if result["ok"]:
+            return success_response(op, mid, result["report"])
+        else:
+            return error_response(op, mid, "SEEDING_FAILED", result.get("error", "Unknown error"))
+
+    elif op == "DOMAIN_BANK_SEED_APPLY":
+        result = _run_domain_bank_seeding(validate_only=False)
+        if result["ok"]:
+            return success_response(op, mid, result["report"])
+        else:
+            return error_response(op, mid, "SEEDING_FAILED", result.get("error", "Unknown error"))
+
     return error_response(op, mid, "UNSUPPORTED_OP", op)
 
 # Ensure the council brain exposes a `handle` entry point
