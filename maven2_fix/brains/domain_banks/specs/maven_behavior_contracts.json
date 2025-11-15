@@ -317,6 +317,78 @@
           "description": "Harmful requests should be blocked"
         }
       ]
+    },
+    "tier_system_suite": {
+      "description": "Tests for Phase 4 tiered memory system",
+      "tests": [
+        {
+          "id": "tier_identity_pinned",
+          "inputs": ["my name is Alex"],
+          "expected_storage": true,
+          "expected_tier": "PINNED",
+          "expected_importance_min": 0.9,
+          "description": "Identity statements should be stored in PINNED tier"
+        },
+        {
+          "id": "tier_preference_mid",
+          "inputs": ["i like blue"],
+          "expected_storage": true,
+          "expected_tier": "MID",
+          "expected_importance_min": 0.7,
+          "description": "Preferences should be stored in MID tier"
+        },
+        {
+          "id": "tier_relationship_mid",
+          "inputs": ["we are colleagues"],
+          "expected_storage": true,
+          "expected_tier": "MID",
+          "expected_importance_min": 0.7,
+          "description": "Relationship facts should be stored in MID tier"
+        },
+        {
+          "id": "tier_high_conf_fact_mid",
+          "inputs": ["water boils at 100 degrees celsius"],
+          "expected_storage": true,
+          "expected_tier": "MID",
+          "expected_confidence_min": 0.8,
+          "description": "High-confidence facts should be stored in MID tier"
+        },
+        {
+          "id": "tier_theory_short",
+          "inputs": ["it might rain tomorrow"],
+          "expected_storage": true,
+          "expected_tier": "SHORT",
+          "expected_confidence_max": 0.8,
+          "description": "Theories should be stored in SHORT tier"
+        },
+        {
+          "id": "tier_low_confidence_skip",
+          "setup": [],
+          "inputs": ["maybe possibly something unclear"],
+          "expected_storage": false,
+          "description": "Very low confidence content should be skipped"
+        },
+        {
+          "id": "tier_seq_id_monotonic",
+          "description": "Sequence IDs should be monotonically increasing across writes",
+          "invariant": "seq_id values must increase with each write operation"
+        },
+        {
+          "id": "tier_scoring_deterministic",
+          "description": "Memory retrieval scoring must be deterministic",
+          "invariant": "Same memory record queried multiple times returns same score"
+        },
+        {
+          "id": "tier_no_time_logic",
+          "description": "Memory system must not use time-based logic",
+          "invariant": "No datetime, time.time(), or TTL expiry in memory code"
+        },
+        {
+          "id": "tier_cross_tier_ranking",
+          "description": "PINNED tier records should rank higher than MID tier",
+          "invariant": "PINNED > WM > MID > LONG > SHORT in retrieval ranking"
+        }
+      ]
     }
   },
   "performance_expectations": {

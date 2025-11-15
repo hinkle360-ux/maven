@@ -76,6 +76,45 @@ _CONVERSATION_STATE: Dict[str, Any] = {
     "conversation_depth": 0,
 }
 
+# ---------------------------------------------------------------------------
+# Phase 4: Tiered Memory System Constants
+#
+# Maven's memory system operates across multiple cognitive tiers, each with
+# different retention characteristics and bandwidth constraints.  These
+# constants define the tier hierarchy and metadata fields used to manage
+# memory lifecycle without time-based expiry (no datetime, no TTL).
+# ---------------------------------------------------------------------------
+
+# Memory tier constants - explicit tier labels for deterministic routing
+TIER_WM = "WM"           # Working memory - very short horizon, high bandwidth
+TIER_SHORT = "SHORT"     # Per-session episodic memory
+TIER_MID = "MID"         # Cross-session high-value memory
+TIER_LONG = "LONG"       # Durable knowledge base
+TIER_PINNED = "PINNED"   # Never evicted unless explicitly removed
+
+# Sequence ID counter for recency tracking (replaces time-based logic)
+# This counter increments monotonically on every write operation to enable
+# recency-aware retrieval without relying on wall-clock timestamps.
+_SEQ_ID_COUNTER: int = 0
+_SEQ_ID_LOCK: threading.Lock = threading.Lock()
+
+def _next_seq_id() -> int:
+    """
+    Generate the next sequence ID for memory records.
+
+    This function provides a monotonically increasing sequence number that
+    serves as a recency indicator without time-based dependencies. Each
+    write operation receives a unique seq_id, enabling deterministic
+    ordering and recency scoring in retrieval operations.
+
+    Returns:
+        A unique, monotonically increasing integer sequence ID.
+    """
+    global _SEQ_ID_COUNTER
+    with _SEQ_ID_LOCK:
+        _SEQ_ID_COUNTER += 1
+        return _SEQ_ID_COUNTER
+
 def _extract_topic(text: str) -> str:
     """
     Extract a plausible topic from a user query.  This helper looks for the
@@ -229,6 +268,222 @@ def _should_cache(query: str, verdict: str, confidence: float) -> bool:
         return True
     except Exception:
         return False
+
+# ---------------------------------------------------------------------------
+# Phase 4: Tiered Memory Assignment and Scoring
+#
+# These functions implement the core logic for Maven's tiered memory system.
+# _assign_tier() determines which memory tier a record belongs to based on
+# intent, confidence, and content type. _score_memory_hit() computes a
+# unified relevance score across all tiers for retrieval ranking.
+# ---------------------------------------------------------------------------
+
+def _assign_tier(record: Dict[str, Any], context: Dict[str, Any]) -> tuple[str, float]:
+    """
+    Assign a memory tier and importance score to a record.
+
+    This function implements deterministic tier assignment based on intent
+    type, confidence level, and semantic content. It does not use time-based
+    logic, LLM calls, or randomness. The tier controls retention policy and
+    retrieval priority, while importance influences consolidation and eviction.
+
+    Tier Assignment Rules:
+    - Identity, self-model, spec, governance → TIER_PINNED (never evicted)
+    - User preferences, relationships → TIER_MID (cross-session)
+    - General factual QA (high confidence) → TIER_MID
+    - Theories, speculations → TIER_SHORT (session-scoped)
+    - Creative outputs, one-offs → TIER_SHORT or SKIP_STORAGE
+    - Low-value, nonsense → SKIP_STORAGE (empty tier string)
+
+    Args:
+        record: Memory record with 'content', 'confidence', and optional
+                'intent', 'verdict', 'tags' fields.
+        context: Additional context with 'intent', 'verdict', 'storable_type',
+                 'is_identity', 'is_preference', 'is_relationship', etc.
+
+    Returns:
+        A tuple of (tier, importance_score) where tier is one of the
+        TIER_* constants and importance_score is a float in [0.0, 1.0].
+        Returns ("", 0.0) if the record should not be stored.
+    """
+    try:
+        # Extract relevant fields from record and context
+        content = str(record.get("content", "")).strip()
+        confidence = float(record.get("confidence", 0.5))
+        intent = str(context.get("intent", "") or record.get("intent", "")).upper()
+        verdict = str(context.get("verdict", "") or record.get("verdict", "")).upper()
+        storable_type = str(context.get("storable_type", "")).upper()
+        tags = record.get("tags") or context.get("tags") or []
+
+        # Normalize tags to list of strings
+        if isinstance(tags, str):
+            tags = [tags]
+        tags_set = {str(t).lower() for t in tags or []}
+
+        # Early exit: no content means no storage
+        if not content or len(content) < 3:
+            return ("", 0.0)
+
+        # Rule 1: PINNED tier - Identity, self-model, specs, governance
+        # These are permanent system knowledge that should never be evicted
+        identity_intents = {"IDENTITY_QUERY", "SELF_DESCRIPTION_REQUEST", "MAVEN_IDENTITY"}
+        system_tags = {"governance", "spec", "design", "architecture", "self_model"}
+
+        if intent in identity_intents or tags_set & system_tags:
+            return (TIER_PINNED, 1.0)
+
+        # User identity statements
+        if ("identity" in tags_set or "user_identity" in tags_set or
+            "my name is" in content.lower() or "i am " in content.lower()):
+            return (TIER_PINNED, 1.0)
+
+        # Rule 2: MID tier - User preferences and relationships
+        # These are high-value cross-session facts about the user
+        preference_intents = {"PREFERENCE", "PREFERENCE_QUERY", "PROFILE_QUERY"}
+        relationship_intents = {"RELATIONSHIP_QUERY", "RELATIONSHIP"}
+        preference_tags = {"preference", "user_preference", "like", "dislike"}
+        relationship_tags = {"relationship", "friend", "family"}
+
+        if (intent in preference_intents or tags_set & preference_tags or
+            verdict == "PREFERENCE"):
+            return (TIER_MID, min(1.0, confidence + 0.2))
+
+        if (intent in relationship_intents or tags_set & relationship_tags or
+            "we are" in content.lower() or "you and i" in content.lower()):
+            return (TIER_MID, min(1.0, confidence + 0.2))
+
+        # Rule 3: MID tier - High-confidence factual knowledge
+        # Validated facts with high confidence are cross-session knowledge
+        if verdict == "TRUE" and confidence >= 0.8:
+            # Check if this is general reusable knowledge vs. one-off
+            # Skip creative/narrative content even if marked TRUE
+            creative_indicators = ["story", "poem", "joke", "imagine", "creative"]
+            if any(ind in content.lower() for ind in creative_indicators):
+                return (TIER_SHORT, confidence * 0.7)
+            return (TIER_MID, confidence)
+
+        # Rule 4: SKIP very low confidence - Filter before tier assignment
+        # Very low confidence records are not worth storing in any tier
+        if confidence < 0.3:
+            return ("", 0.0)
+
+        # Rule 5: SHORT tier - Theories, speculations, medium confidence
+        # These are session-scoped hypotheses that may be promoted later
+        if verdict in {"THEORY", "UNKNOWN"} or (0.5 <= confidence < 0.8):
+            return (TIER_SHORT, confidence * 0.8)
+
+        # Rule 6: SHORT tier - Questions and transient interactions
+        # Questions themselves may be stored briefly for context tracking
+        question_intents = {"QUESTION", "SIMPLE_FACT_QUERY", "EXPLAIN", "WHY", "HOW"}
+        if intent in question_intents or storable_type == "QUESTION":
+            # Only store in SHORT if explicitly requested via tags
+            if "store_question" in tags_set:
+                return (TIER_SHORT, 0.5)
+            else:
+                return ("", 0.0)  # Skip storage by default
+
+        # Rule 7: SKIP_STORAGE - Meta-queries, social, low quality
+        skip_verdicts = {"SKIP_STORAGE", "UNANSWERED"}
+        skip_intents = {"SOCIAL", "EMOTION", "GREETING", "UNKNOWN_INPUT"}
+
+        if verdict in skip_verdicts or intent in skip_intents:
+            return ("", 0.0)
+
+        # Rule 7: LONG tier - Default for unclassified mid-high confidence
+        # This is the fallback for factual content that doesn't fit above
+        if confidence >= 0.6:
+            return (TIER_LONG, confidence)
+
+        # Final fallback: SHORT tier for anything else with minimal importance
+        return (TIER_SHORT, confidence * 0.5)
+
+    except Exception:
+        # On any error, skip storage to avoid corrupting memory
+        return ("", 0.0)
+
+
+def _score_memory_hit(hit: Dict[str, Any], query: Dict[str, Any]) -> float:
+    """
+    Compute a deterministic relevance score for a memory retrieval hit.
+
+    This function ranks memory hits across all tiers using a transparent,
+    explainable formula. It combines tier priority, importance, usage
+    patterns, recency, and match quality without time-based logic or
+    randomness.
+
+    Scoring Formula:
+        base_score = match_quality (from retrieval system)
+        tier_boost = tier-dependent constant
+        importance_boost = importance * 0.3
+        usage_boost = min(use_count * 0.05, 0.2)
+        recency_boost = (seq_id / max_seq_id) * 0.1  # normalized recency
+
+        final_score = base_score + tier_boost + importance_boost + usage_boost + recency_boost
+
+    Args:
+        hit: A memory record with fields: tier, importance, use_count, seq_id,
+             score (match quality), content, etc.
+        query: The retrieval query context (may include filters, k, etc.)
+
+    Returns:
+        A float score in [0.0, ~2.0+] where higher scores indicate better
+        relevance. The score is deterministic and does not depend on time.
+    """
+    try:
+        # Extract base match quality (default to 0.5 if not present)
+        try:
+            base_score = float(hit.get("score", 0.0) or hit.get("similarity", 0.0) or 0.5)
+        except (TypeError, ValueError):
+            base_score = 0.5
+
+        # Tier boost - prioritize higher tiers
+        tier = str(hit.get("tier", "")).upper()
+        tier_boost_map = {
+            TIER_PINNED: 0.5,   # Highest priority
+            TIER_MID: 0.3,      # Cross-session facts
+            TIER_SHORT: 0.1,    # Session facts
+            TIER_WM: 0.4,       # Working memory (high short-term value)
+            TIER_LONG: 0.2,     # Long-term knowledge
+        }
+        tier_boost = tier_boost_map.get(tier, 0.0)
+
+        # Importance boost (0 to 0.3)
+        try:
+            importance = float(hit.get("importance", 0.0))
+        except (TypeError, ValueError):
+            importance = 0.0
+        importance_boost = min(importance * 0.3, 0.3)
+
+        # Usage boost - frequently accessed hits get a bump
+        try:
+            use_count = int(hit.get("use_count", 0))
+        except (TypeError, ValueError):
+            use_count = 0
+        usage_boost = min(use_count * 0.05, 0.2)
+
+        # Recency boost - based on seq_id (larger = more recent)
+        # Normalize by current counter to get [0, 1] range
+        try:
+            seq_id = int(hit.get("seq_id", 0))
+        except (TypeError, ValueError):
+            seq_id = 0
+
+        # Get current max seq_id for normalization
+        global _SEQ_ID_COUNTER
+        max_seq_id = max(_SEQ_ID_COUNTER, 1)  # Avoid division by zero
+        recency_boost = (seq_id / max_seq_id) * 0.1 if seq_id > 0 else 0.0
+
+        # Combine all factors
+        final_score = base_score + tier_boost + importance_boost + usage_boost + recency_boost
+
+        return final_score
+
+    except Exception:
+        # On error, return base score only
+        try:
+            return float(hit.get("score", 0.0) or 0.5)
+        except Exception:
+            return 0.5
 
 # ---------------------------------------------------------------------------
 # Continuation and pronoun resolution helper
@@ -2967,6 +3222,8 @@ def _unified_retrieve(query: str, k: int = 5, filters: Optional[dict] = None) ->
     except Exception:
         personal_api = None
     enriched: List[Dict[str, Any]] = []
+    query_context = {"query": query, "k": limit_int}
+
     for item in results:
         # Normalise the subject text for boosting
         try:
@@ -2982,18 +3239,25 @@ def _unified_retrieve(query: str, k: int = 5, filters: Optional[dict] = None) ->
                     boost_val = float((resp.get("payload") or {}).get("boost") or 0.0)
             except Exception:
                 boost_val = 0.0
-        # Determine original confidence or score from result
-        try:
-            conf_val = float(item.get("confidence") or item.get("score") or 0.0)
-        except Exception:
-            conf_val = 0.0
-        total = conf_val + boost_val
-        # Annotate result with boost and total_score
+
+        # Phase 4: Apply tier-aware scoring
+        # This replaces the simple conf_val + boost_val with a sophisticated
+        # cross-tier ranking that considers tier priority, importance, usage,
+        # recency (via seq_id), and match quality.
+        tier_score = _score_memory_hit(item, query_context)
+
+        # Combine tier score with personal boost for final ranking
+        total = tier_score + boost_val
+
+        # Annotate result with all scoring components for explainability
         enriched_item = dict(item)
         enriched_item["boost"] = boost_val
+        enriched_item["tier_score"] = tier_score
         enriched_item["total_score"] = total
+        enriched_item["retrieval_score"] = tier_score  # For downstream consumers
         enriched.append(enriched_item)
-    # Sort results by descending total_score
+
+    # Sort results by descending total_score (tier-aware + personal boost)
     enriched.sort(key=lambda x: x.get("total_score", 0.0), reverse=True)
     # Trim to requested limit
     if limit_int > 0:
@@ -5442,6 +5706,20 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                         ver_level = "educated_guess"
                     else:
                         ver_level = "unknown"
+                    # Phase 4: Assign tier and importance via tier system
+                    tier_context = {
+                        "intent": str(ctx.get("intent", "")),
+                        "verdict": verdict,
+                        "storable_type": str(ctx.get("storable_type", "")),
+                        "tags": [],
+                    }
+                    record_for_tier = {
+                        "content": proposed_content or text,
+                        "confidence": conf_val,
+                        "verdict": verdict,
+                    }
+                    tier, tier_importance = _assign_tier(record_for_tier, tier_context)
+
                     fact_payload = {
                         "content": proposed_content or text,
                         "confidence": conf_val,
@@ -5450,7 +5728,10 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                         "validated_by": "reasoning",
                         # Assign importance equal to the confidence value.  This allows
                         # high‑confidence facts to be promoted quickly to MTM/LTM
-                        "importance": conf_val,
+                        "importance": max(conf_val, tier_importance),  # Use max of conf and tier importance
+                        "tier": tier or TIER_LONG,  # Default to LONG tier if not assigned
+                        "seq_id": _next_seq_id(),
+                        "use_count": 0,
                         "metadata": {
                             "supported_by": (ctx.get("stage_8_validation") or {}).get("supported_by", []),
                             "contradicted_by": (ctx.get("stage_8_validation") or {}).get("contradicted_by", []),
@@ -5482,9 +5763,24 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                     # Theories and contradictions bank uses custom store operations
                     if target_bank == "theories_and_contradictions":
                         # Always treat low-confidence submissions as theories
+                        # Phase 4: Assign tier for theories
+                        conf_theory = float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0))
+                        tier_context_theory = {
+                            "intent": str(ctx.get("intent", "")),
+                            "verdict": "THEORY",
+                            "storable_type": str(ctx.get("storable_type", "")),
+                            "tags": [],
+                        }
+                        record_for_tier_theory = {
+                            "content": proposed_content or text,
+                            "confidence": conf_theory,
+                            "verdict": "THEORY",
+                        }
+                        tier_theory, tier_importance_theory = _assign_tier(record_for_tier_theory, tier_context_theory)
+
                         fact_payload = {
                             "content": proposed_content or text,
-                            "confidence": float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0)),
+                            "confidence": conf_theory,
                             "source_brain": "reasoning",
                             "linked_fact_id": None,
                             "contradicts": [],
@@ -5492,7 +5788,10 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                             "verification_level": "educated_guess",
                             # Use confidence as importance for theories too; moderate importance encourages
                             # promotion into mid‑term memory once validated further.
-                            "importance": float((ctx.get("stage_8_validation") or {}).get("confidence", 0.0)),
+                            "importance": max(conf_theory, tier_importance_theory),
+                            "tier": tier_theory or TIER_SHORT,  # Theories default to SHORT tier
+                            "seq_id": _next_seq_id(),
+                            "use_count": 0,
                             "metadata": {
                                 "supported_by": (ctx.get("stage_8_validation") or {}).get("supported_by", []),
                                 "contradicted_by": (ctx.get("stage_8_validation") or {}).get("contradicted_by", []),
@@ -5518,6 +5817,20 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                             ver_level = "educated_guess"
                         else:
                             ver_level = "unknown"
+                        # Phase 4: Assign tier and importance via tier system
+                        tier_context_generic = {
+                            "intent": str(ctx.get("intent", "")),
+                            "verdict": verdict,
+                            "storable_type": str(ctx.get("storable_type", "")),
+                            "tags": [],
+                        }
+                        record_for_tier_generic = {
+                            "content": proposed_content or text,
+                            "confidence": conf_val,
+                            "verdict": verdict,
+                        }
+                        tier_generic, tier_importance_generic = _assign_tier(record_for_tier_generic, tier_context_generic)
+
                         fact_payload = {
                             "content": proposed_content or text,
                             "confidence": conf_val,
@@ -5525,7 +5838,10 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                             "source": "user_input",
                             "validated_by": "reasoning",
                             # Assign importance equal to confidence to aid promotion
-                            "importance": conf_val,
+                            "importance": max(conf_val, tier_importance_generic),
+                            "tier": tier_generic or TIER_LONG,  # Default to LONG tier
+                            "seq_id": _next_seq_id(),
+                            "use_count": 0,
                             "metadata": {
                                 "supported_by": (ctx.get("stage_8_validation") or {}).get("supported_by", []),
                                 "contradicted_by": (ctx.get("stage_8_validation") or {}).get("contradicted_by", []),
@@ -6815,6 +7131,114 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         return success_response(op, mid, {"rotations": rotated, "counts": counts})
 
     # ----------------------------------------------------------------------
+    # Phase 4: Memory Health Summary - Tiered Memory Diagnostics
+    #
+    # This operation provides a comprehensive summary of memory health across
+    # all tiers without modifying any state.  It returns counts, average
+    # importance, and other statistics for each tier to enable debugging and
+    # monitoring of the tiered memory system.
+    # ----------------------------------------------------------------------
+    if op == "MEMORY_HEALTH_SUMMARY":
+        try:
+            # Initialize tier statistics
+            tier_stats = {
+                TIER_PINNED: {"count": 0, "total_importance": 0.0, "total_use_count": 0, "total_confidence": 0.0},
+                TIER_MID: {"count": 0, "total_importance": 0.0, "total_use_count": 0, "total_confidence": 0.0},
+                TIER_SHORT: {"count": 0, "total_importance": 0.0, "total_use_count": 0, "total_confidence": 0.0},
+                TIER_WM: {"count": 0, "total_importance": 0.0, "total_use_count": 0, "total_confidence": 0.0},
+                TIER_LONG: {"count": 0, "total_importance": 0.0, "total_use_count": 0, "total_confidence": 0.0},
+                "UNKNOWN": {"count": 0, "total_importance": 0.0, "total_use_count": 0, "total_confidence": 0.0},
+            }
+
+            # Scan working memory
+            with _WM_LOCK:
+                for entry in _WORKING_MEMORY:
+                    tier = str(entry.get("tier", "UNKNOWN")).upper()
+                    if tier not in tier_stats:
+                        tier = "UNKNOWN"
+                    tier_stats[tier]["count"] += 1
+                    try:
+                        tier_stats[tier]["total_importance"] += float(entry.get("importance", 0.0))
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        tier_stats[tier]["total_use_count"] += int(entry.get("use_count", 0))
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        tier_stats[tier]["total_confidence"] += float(entry.get("confidence", 0.0))
+                    except (TypeError, ValueError):
+                        pass
+
+            # Scan brain storage files
+            for brain_name in ["memory_librarian", "reasoning", "language", "planner", "personality"]:
+                try:
+                    brain_mem_dir = MAVEN_ROOT / "brains" / "cognitive" / brain_name / "memory"
+                    brain_mem_file = brain_mem_dir / "brain_storage.jsonl"
+                    if brain_mem_file.exists():
+                        with open(brain_mem_file, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if not line.strip():
+                                    continue
+                                try:
+                                    record = json.loads(line)
+                                    tier = str(record.get("tier", "UNKNOWN")).upper()
+                                    if tier not in tier_stats:
+                                        tier = "UNKNOWN"
+                                    tier_stats[tier]["count"] += 1
+                                    try:
+                                        tier_stats[tier]["total_importance"] += float(record.get("importance", 0.0))
+                                    except (TypeError, ValueError):
+                                        pass
+                                    try:
+                                        tier_stats[tier]["total_use_count"] += int(record.get("use_count", 0))
+                                    except (TypeError, ValueError):
+                                        pass
+                                    try:
+                                        tier_stats[tier]["total_confidence"] += float(record.get("confidence", 0.0))
+                                    except (TypeError, ValueError):
+                                        pass
+                                except json.JSONDecodeError:
+                                    continue
+                except Exception:
+                    # Skip brains that don't exist or have errors
+                    pass
+
+            # Compute averages
+            summary_by_tier = {}
+            total_records = 0
+            for tier, stats in tier_stats.items():
+                count = stats["count"]
+                total_records += count
+                if count > 0:
+                    summary_by_tier[tier] = {
+                        "count": count,
+                        "avg_importance": stats["total_importance"] / count,
+                        "avg_use_count": stats["total_use_count"] / count,
+                        "avg_confidence": stats["total_confidence"] / count,
+                    }
+                else:
+                    summary_by_tier[tier] = {
+                        "count": 0,
+                        "avg_importance": 0.0,
+                        "avg_use_count": 0.0,
+                        "avg_confidence": 0.0,
+                    }
+
+            # Include global state
+            global _SEQ_ID_COUNTER
+            health_summary = {
+                "tiers": summary_by_tier,
+                "total_records": total_records,
+                "current_seq_id": _SEQ_ID_COUNTER,
+                "timestamp": None,  # No time-based logic
+            }
+
+            return success_response(op, mid, health_summary)
+        except Exception as e:
+            return error_response(op, mid, "MEMORY_HEALTH_SUMMARY_FAILED", str(e))
+
+    # ----------------------------------------------------------------------
     # Configuration operations
     # These allow runtime toggling of the pipeline tracer and adjustment of
     # rotation thresholds.  They do not persist changes beyond the current
@@ -6880,11 +7304,27 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
                 conf = float((payload or {}).get("confidence", 0.0))
             except Exception:
                 conf = 0.0
+            # Assign tier and importance via Phase 4 tier system
+            tier_context = {
+                "intent": str((payload or {}).get("intent", "")),
+                "verdict": str((payload or {}).get("verdict", "")),
+                "tags": tags,
+            }
+            record_for_tier = {"content": str(value or ""), "confidence": conf, "tags": tags}
+            tier, importance = _assign_tier(record_for_tier, tier_context)
+
+            # Generate sequence ID for recency tracking
+            seq_id = _next_seq_id()
+
             entry = {
                 "key": key,
                 "value": value,
                 "tags": tags,
                 "confidence": conf,
+                "tier": tier or TIER_WM,  # Default to WM tier if not assigned
+                "importance": importance,
+                "seq_id": seq_id,
+                "use_count": 0,  # Initialize usage counter
             }
             with _WM_LOCK:
                 _prune_working_memory()
@@ -7346,12 +7786,25 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
             brain_mem_dir = MAVEN_ROOT / "brains" / "cognitive" / origin_brain / "memory"
             brain_mem_dir.mkdir(parents=True, exist_ok=True)
             brain_mem_file = brain_mem_dir / "brain_storage.jsonl"
+            # Assign tier and importance via Phase 4 tier system
+            tier_context = {
+                "intent": str((payload or {}).get("intent", "")),
+                "verdict": str((payload or {}).get("verdict", "")),
+                "tags": (payload or {}).get("tags") or [],
+            }
+            record_for_tier = {"content": str(value or ""), "confidence": conf}
+            tier, importance = _assign_tier(record_for_tier, tier_context)
+
             # Append the entry to JSONL file (no read-modify-write, true append)
             record = {
                 "key": key,
                 "value": value,
                 "confidence": conf,
                 "scope": scope,
+                "tier": tier or TIER_MID,  # Brain storage defaults to MID tier
+                "importance": importance,
+                "seq_id": _next_seq_id(),
+                "use_count": 0,
             }
             with open(brain_mem_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
