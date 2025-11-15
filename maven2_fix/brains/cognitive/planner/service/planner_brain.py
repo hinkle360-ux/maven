@@ -116,6 +116,184 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
         return success_response(op, mid, {"status": "operational"})
+
+    # DECOMPOSE_TASK - Phase 8: Deterministic task decomposition
+    if op == "DECOMPOSE_TASK":
+        task = str(payload.get("task", ""))
+        context = payload.get("context") or {}
+
+        if not task:
+            return error_response(op, mid, "MISSING_TASK", "Task description is required")
+
+        # Get planning patterns from domain bank
+        planning_patterns = _get_planning_patterns()
+        patterns_used = []
+
+        # Decompose task using planning patterns
+        steps = []
+
+        # Analyze task to determine decomposition strategy
+        task_lower = task.lower()
+
+        # Check for coding/implementation tasks
+        if any(keyword in task_lower for keyword in ["implement", "code", "write", "build", "create", "fix", "debug"]):
+            # Use divide_and_conquer strategy for implementation
+            patterns_used.append("planning_patterns:strategy:divide_and_conquer")
+            patterns_used.append("planning_patterns:constraint:determinism_first")
+
+            steps = [
+                {
+                    "type": "planning",
+                    "description": f"Analyze requirements for: {task}",
+                    "tags": ["plan", "analyze"],
+                    "input": {"task": task, "context": context}
+                },
+                {
+                    "type": "coding",
+                    "description": f"Implement solution for: {task}",
+                    "tags": ["coding", "implement"],
+                    "input": {"task": task, "context": context}
+                },
+                {
+                    "type": "reasoning",
+                    "description": f"Verify implementation correctness",
+                    "tags": ["reasoning", "verify"],
+                    "input": {"task": task, "context": context}
+                }
+            ]
+
+        # Check for creative/brainstorming tasks
+        elif any(keyword in task_lower for keyword in ["brainstorm", "imagine", "creative", "design", "ideate"]):
+            patterns_used.append("planning_patterns:strategy:divide_and_conquer")
+
+            steps = [
+                {
+                    "type": "creative",
+                    "description": f"Generate ideas for: {task}",
+                    "tags": ["creative", "brainstorm"],
+                    "input": {"task": task, "context": context}
+                },
+                {
+                    "type": "reasoning",
+                    "description": f"Evaluate and rank ideas",
+                    "tags": ["reasoning", "evaluate"],
+                    "input": {"task": task, "context": context}
+                }
+            ]
+
+        # Check for conflict/decision tasks
+        elif any(keyword in task_lower for keyword in ["decide", "choose", "resolve", "conflict", "arbitrate"]):
+            patterns_used.append("planning_patterns:strategy:divide_and_conquer")
+
+            steps = [
+                {
+                    "type": "governance",
+                    "description": f"Arbitrate decision for: {task}",
+                    "tags": ["governance", "decide"],
+                    "input": {"task": task, "context": context}
+                }
+            ]
+
+        # Check for analysis/understanding tasks
+        elif any(keyword in task_lower for keyword in ["analyze", "understand", "explain", "parse"]):
+            steps = [
+                {
+                    "type": "planning",
+                    "description": f"Parse and understand: {task}",
+                    "tags": ["parse", "analyze"],
+                    "input": {"task": task, "context": context}
+                },
+                {
+                    "type": "reasoning",
+                    "description": f"Reason about: {task}",
+                    "tags": ["reasoning", "logic"],
+                    "input": {"task": task, "context": context}
+                },
+                {
+                    "type": "language",
+                    "description": f"Compose explanation",
+                    "tags": ["language", "generate"],
+                    "input": {"task": task, "context": context}
+                }
+            ]
+
+        # Default: generic multi-step plan
+        else:
+            patterns_used.append("planning_patterns:heuristic:smallest_testable_unit")
+
+            steps = [
+                {
+                    "type": "planning",
+                    "description": f"Plan approach for: {task}",
+                    "tags": ["plan"],
+                    "input": {"task": task, "context": context}
+                },
+                {
+                    "type": "reasoning",
+                    "description": f"Execute and reason about: {task}",
+                    "tags": ["reasoning"],
+                    "input": {"task": task, "context": context}
+                }
+            ]
+
+        result = {
+            "steps": steps,
+            "patterns_used": patterns_used,
+            "task": task
+        }
+
+        # Persist decomposition to memory
+        try:
+            t = ensure_dirs(BRAIN_ROOT)
+            append_jsonl(t["stm"], {
+                "op": "DECOMPOSE_TASK",
+                "task": task,
+                "steps": steps,
+                "patterns_used": patterns_used
+            })
+            rotate_if_needed(BRAIN_ROOT)
+        except Exception:
+            pass
+
+        return success_response(op, mid, result)
+
+    # EXECUTE_STEP: Phase 8 - Execute a planning/parsing step
+    if op == "EXECUTE_STEP":
+        step = payload.get("step") or {}
+        step_id = payload.get("step_id", 0)
+        context = payload.get("context") or {}
+
+        # Get planning patterns
+        planning_patterns = _get_planning_patterns()
+        patterns_used = []
+
+        # Extract step details
+        description = step.get("description", "")
+        step_input = step.get("input") or {}
+        task = step_input.get("task", description)
+
+        # Execute planning step
+        # For parse/analyze tasks, decompose into sub-components
+        # For plan tasks, create a structured plan
+
+        intents, targets = _guess_intents_targets(task)
+
+        output = {
+            "analysis": description,
+            "intents": intents,
+            "targets": targets,
+            "task": task
+        }
+
+        # Use relevant planning patterns
+        if planning_patterns:
+            patterns_used = ["planning_patterns:strategy:divide_and_conquer"]
+
+        return success_response(op, mid, {
+            "output": output,
+            "patterns_used": patterns_used
+        })
+
     # Generate a basic plan for user requests and track long‑term goals.
     if op == "PLAN":
         text = str(payload.get("text", ""))

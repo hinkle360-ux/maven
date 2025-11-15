@@ -6600,6 +6600,41 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     if op == "HEALTH":
         return {"ok": True, "op": op, "mid": mid, "payload": {"status":"ok"}}
 
+    # EXECUTE_STEP: Phase 8 - Execute a language generation step
+    if op == "EXECUTE_STEP":
+        step = payload.get("step") or {}
+        step_id = payload.get("step_id", 0)
+        context = payload.get("context") or {}
+
+        # Extract step details
+        description = step.get("description", "")
+        step_input = step.get("input") or {}
+        task = step_input.get("task", description)
+
+        # Use GENERATE_CANDIDATES for language generation
+        gen_result = service_api({
+            "op": "GENERATE_CANDIDATES",
+            "mid": mid,
+            "payload": {
+                "text": task,
+                "context": context,
+                "n": 1
+            }
+        })
+
+        if gen_result.get("ok"):
+            gen_payload = gen_result.get("payload") or {}
+            candidates = gen_payload.get("candidates", [])
+
+            output = candidates[0] if candidates else task
+
+            return {"ok": True, "op": op, "mid": mid, "payload": {
+                "output": output,
+                "patterns_used": ["language:generation"]
+            }}
+
+        return {"ok": False, "op": op, "mid": mid, "error": {"code": "GENERATION_FAILED", "message": "Failed to generate text"}}
+
     return {"ok": False, "op": op, "mid": mid, "error": {"code": "UNSUPPORTED_OP", "message": op}}
 
 # -----------------------------------------------------------------------------

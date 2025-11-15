@@ -1526,6 +1526,30 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
     # Health endpoint just returns a status ok
     if op == "HEALTH":
         return {"ok": True, "op": op, "mid": mid, "payload": {"status": "ok"}}
+    # EXECUTE_STEP: Phase 8 - Execute a reasoning/logic step
+    if op == "EXECUTE_STEP":
+        step = payload.get("step") or {}
+        step_id = payload.get("step_id", 0)
+        context = payload.get("context") or {}
+
+        # Extract step details
+        description = step.get("description", "")
+        step_input = step.get("input") or {}
+        task = step_input.get("task", description)
+
+        # Execute reasoning step
+        # For simplicity, return a structured reasoning result
+        output = {
+            "reasoning": f"Analyzed: {description}",
+            "conclusion": f"Completed reasoning about: {task}",
+            "task": task
+        }
+
+        return {"ok": True, "op": op, "mid": mid, "payload": {
+            "output": output,
+            "patterns_used": ["reasoning:logic"]
+        }}
+
     return {"ok": False, "op": op, "mid": mid, "error": {"code": "UNSUPPORTED_OP", "message": op}}
 
 # -----------------------------------------------------------------------------

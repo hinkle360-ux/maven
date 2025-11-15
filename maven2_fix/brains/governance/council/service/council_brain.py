@@ -82,6 +82,68 @@ def service_api(msg: Dict[str, Any]) -> Dict[str, Any]:
         else:
             return error_response(op, mid, "SEEDING_FAILED", result.get("error", "Unknown error"))
 
+    # Phase 8: Task execution operations
+    elif op == "TASK_EXECUTE":
+        task = payload.get("task", "")
+        context = payload.get("context") or {}
+
+        if not task:
+            return error_response(op, mid, "MISSING_TASK", "Task description is required")
+
+        try:
+            # Import and use Task Execution Engine
+            from brains.governance.task_execution_engine.engine import get_engine
+
+            engine = get_engine()
+            result = engine.execute_task(task, context, with_trace=False)
+
+            if result.get("success"):
+                return success_response(op, mid, {
+                    "output": result.get("output"),
+                    "steps_executed": result.get("steps_executed", 0)
+                })
+            else:
+                return error_response(
+                    op, mid,
+                    result.get("error_code", "EXECUTION_FAILED"),
+                    result.get("error", "Task execution failed")
+                )
+
+        except Exception as e:
+            return error_response(op, mid, "TASK_EXECUTION_ERROR", str(e))
+
+    elif op == "TASK_EXECUTE_WITH_TRACE":
+        task = payload.get("task", "")
+        context = payload.get("context") or {}
+
+        if not task:
+            return error_response(op, mid, "MISSING_TASK", "Task description is required")
+
+        try:
+            # Import and use Task Execution Engine
+            from brains.governance.task_execution_engine.engine import get_engine
+
+            engine = get_engine()
+            result = engine.execute_task(task, context, with_trace=True)
+
+            if result.get("success"):
+                return success_response(op, mid, {
+                    "output": result.get("output"),
+                    "steps_executed": result.get("steps_executed", 0),
+                    "trace": result.get("trace", {})
+                })
+            else:
+                # Include trace even on failure
+                return error_response(
+                    op, mid,
+                    result.get("error_code", "EXECUTION_FAILED"),
+                    result.get("error", "Task execution failed"),
+                    extra_data={"trace": result.get("trace", {})}
+                )
+
+        except Exception as e:
+            return error_response(op, mid, "TASK_EXECUTION_ERROR", str(e))
+
     return error_response(op, mid, "UNSUPPORTED_OP", op)
 
 # Ensure the council brain exposes a `handle` entry point
