@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 import re
+import sys
 
 # Deferred import for affect modulation.  Importing inside the PLAN
 # operation avoids circular dependencies when the affect brain itself
@@ -11,6 +12,36 @@ import importlib
 
 HERE = Path(__file__).resolve().parent
 BRAIN_ROOT = HERE.parent
+
+# Import domain lookup for accessing planning patterns
+MAVEN_ROOT = HERE.parents[3]
+sys.path.insert(0, str(MAVEN_ROOT / "brains" / "domain_banks"))
+try:
+    from domain_lookup import lookup_by_bank_and_kind, lookup_by_tag
+except Exception:
+    lookup_by_bank_and_kind = None  # type: ignore
+    lookup_by_tag = None  # type: ignore
+
+def _get_planning_patterns() -> Dict[str, Any]:
+    """
+    Get planning patterns from domain bank.
+
+    Returns:
+        Dict mapping pattern types to patterns
+    """
+    patterns = {}
+    if lookup_by_bank_and_kind:
+        try:
+            # Get all planning patterns (strategies, constraints, patterns, heuristics)
+            for kind in ["strategy", "constraint", "pattern", "heuristic"]:
+                entries = lookup_by_bank_and_kind("planning_patterns", kind)
+                for entry in entries:
+                    entry_id = entry.get("id", "")
+                    patterns[entry_id] = entry
+        except Exception:
+            pass  # Return empty dict if lookup fails
+    return patterns
+
 
 def _guess_intents_targets(text: str):
     text_l = (text or "").lower()

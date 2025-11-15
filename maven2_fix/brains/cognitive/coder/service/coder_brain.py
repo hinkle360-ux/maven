@@ -49,6 +49,7 @@ from typing import Dict, Any, Tuple
 import re
 from pathlib import Path
 import json
+import sys
 
 # Import the python_exec tool's service API dynamically to avoid
 # circular dependencies when loading other brains.
@@ -59,6 +60,14 @@ except Exception:
 
 THIS_FILE = Path(__file__).resolve()
 MAVEN_ROOT = THIS_FILE.parents[4]
+
+# Import domain lookup for accessing coding patterns
+sys.path.insert(0, str(MAVEN_ROOT / "brains" / "domain_banks"))
+try:
+    from domain_lookup import lookup_by_tag, lookup_by_bank_and_kind
+except Exception:
+    lookup_by_tag = None  # type: ignore
+    lookup_by_bank_and_kind = None  # type: ignore
 
 # Load coding configuration to determine refinement limits
 def _load_coding_config() -> Dict[str, Any]:
@@ -71,6 +80,24 @@ def _load_coding_config() -> Dict[str, Any]:
     except Exception:
         pass
     return {}
+
+
+def _get_coding_patterns() -> Dict[str, Any]:
+    """
+    Get coding patterns from domain bank.
+
+    Returns:
+        Dict mapping pattern IDs to pattern entries
+    """
+    patterns = {}
+    if lookup_by_bank_and_kind:
+        try:
+            pattern_entries = lookup_by_bank_and_kind("coding_patterns", "pattern")
+            for entry in pattern_entries:
+                patterns[entry.get("id", "")] = entry
+        except Exception:
+            pass  # Return empty dict if lookup fails
+    return patterns
 
 
 def _infer_function_name(spec: str) -> str:
