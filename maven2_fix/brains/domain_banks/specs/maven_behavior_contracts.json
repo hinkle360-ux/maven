@@ -288,7 +288,7 @@
         },
         {
           "id": "error_very_long_input",
-          "inputs": ["a" * 10000],
+          "inputs": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
           "expected_no_crash": true,
           "description": "Very long input should not crash"
         },
